@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>小冉学长 · 离线三维模型查看器</title>
+<meta name="description" content="大疆司空2 导出的 3DTiles 离线三维模型查看器，叠加本地矢量标签，全程不联网。">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230d1b2a'/%3E%3Cpath d='M6 22 L16 8 L26 22' stroke='%2300d4aa' stroke-width='2.4' fill='none'/%3E%3Cpath d='M10 24 H22' stroke='%2300d4aa' stroke-width='1.6' opacity='.6'/%3C/svg%3E">
+<link rel="stylesheet" href="lib/cesium/Widgets/widgets.css">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- ================= 三维画布 ================= -->
+<div id="cesiumContainer"></div>
+
+<!-- ================= 顶栏 ================= -->
+<header id="topbar">
+  <div class="brand">
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+      <path d="M4 23 L16 6 L28 23" stroke="#00d4aa" stroke-width="2.6" fill="none"/>
+      <path d="M9 25.5 H23" stroke="#00d4aa" stroke-width="1.6" opacity="0.55"/>
+      <circle cx="16" cy="6" r="1.9" fill="#00d4aa"/>
+    </svg>
+    <div class="brand-text">
+      <h1 id="appTitle">小冉学长 · 离线三维模型查看器</h1>
+      <p id="appSub">大疆司空2 3DTiles / 本地矢量标签</p>
+    </div>
+  </div>
+
+  <div class="top-mid">
+    <label class="field">
+      <span>测段</span>
+      <select id="modelSelect" title="切换要查看的模型"></select>
+    </label>
+    <button id="btnReloadModel" class="btn btn-sm" title="重新加载当前模型（换模型文件后用）">重新加载</button>
+    <span id="modelState" class="pill pill-wait">检测中</span>
+  </div>
+
+  <div class="top-right">
+    <span id="offlineBadge" class="pill pill-offline" title="所有资源均来自本机，不发任何网络请求">离线运行</span>
+    <button id="btnFullscreen" class="icon-btn" title="全屏 / 退出全屏">
+      <svg viewBox="0 0 20 20"><path d="M3 7V3h4M17 7V3h-4M3 13v4h4M17 13v4h-4" stroke-width="1.6"/></svg>
+    </button>
+  </div>
+</header>
+
+<!-- ================= 左侧工具条 ================= -->
+<nav id="rail">
+  <button class="rail-btn" data-panel="layer" title="图层管理">
+    <svg viewBox="0 0 24 24"><path d="M12 3 L21 8 L12 13 L3 8 Z" stroke-width="1.7"/><path d="M3 12.5 L12 17.5 L21 12.5" stroke-width="1.7"/><path d="M3 16.5 L12 21.5 L21 16.5" stroke-width="1.7" opacity=".55"/></svg>
+    <span>图层</span>
+  </button>
+  <button class="rail-btn" data-panel="info" title="选中要素的属性">
+    <svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2" stroke-width="1.7"/><path d="M8 9 H16 M8 13 H16 M8 17 H12" stroke-width="1.7"/></svg>
+    <span>属性</span>
+  </button>
+  <button class="rail-btn" data-panel="measure" title="测量距离与面积">
+    <svg viewBox="0 0 24 24"><path d="M3 15 L15 3 L21 9 L9 21 Z" stroke-width="1.7"/><path d="M7 11 L9 13 M11 7 L13 9 M13 17 L15 19" stroke-width="1.5" opacity=".7"/></svg>
+    <span>测量</span>
+  </button>
+  <button class="rail-btn" data-panel="offset" title="模型位置/高程微调">
+    <svg viewBox="0 0 24 24"><path d="M12 3 V21 M3 12 H21" stroke-width="1.6" opacity=".5"/><path d="M12 8 L15 12 L12 16 L9 12 Z" stroke-width="1.7"/></svg>
+    <span>校正</span>
+  </button>
+  <div class="rail-sep"></div>
+  <button class="rail-btn" id="btnShot" data-action="shot" title="导出当前画面 PNG">
+    <svg viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="12" rx="2" stroke-width="1.7"/><circle cx="12" cy="13" r="3.4" stroke-width="1.7"/><path d="M8 7 L9.5 4.5 H14.5 L16 7" stroke-width="1.5"/></svg>
+    <span>截图</span>
+  </button>
+</nav>
+
+<!-- ================= 右侧面板 ================= -->
+<aside id="panel" class="panel-hidden">
+  <div class="panel-head">
+    <h2 id="panelTitle">图层</h2>
+    <button id="btnPanelClose" class="icon-btn" title="收起面板">
+      <svg viewBox="0 0 20 20"><path d="M6 6 L14 14 M14 6 L6 14" stroke-width="1.7"/></svg>
+    </button>
+  </div>
+  <div id="panelBody" class="panel-body"></div>
+</aside>
+
+<!-- ================= 底部状态栏 ================= -->
+<footer id="statusbar">
+  <span class="stat" id="statTiles">瓦片 —</span>
+  <span class="stat" id="statFps">FPS —</span>
+  <span class="stat" id="statCam">—</span>
+  <span class="stat grow" id="statHint">鼠标左键旋转，滚轮缩放，右键平移</span>
+</footer>
+
+<!-- ================= 空状态 / 模型未到位引导 ================= -->
+<div id="emptyState" class="empty hidden">
+  <div class="empty-card">
+    <div class="empty-icon">
+      <svg viewBox="0 0 48 48" aria-hidden="true">
+        <path d="M6 36 L24 10 L42 36" stroke="#00d4aa" stroke-width="2.6" fill="none" opacity=".9"/>
+        <path d="M13 40 H35" stroke="#00d4aa" stroke-width="1.8" opacity=".4"/>
+      </svg>
+    </div>
+    <h2 id="emptyTitle">还没有检测到三维模型</h2>
+    <p id="emptyDesc" class="empty-desc">模型还在下载/解压也没关系，查看器已经在后台每 5 秒检测一次，文件一到就自动加载。</p>
+    <ol class="empty-steps">
+      <li><b>找到司空2导出的 3DTiles 包</b><span>解压后目录里有 <code>tileset.json</code> 和一堆瓦片（<code>b3dm</code> / <code>glb</code>）</span></li>
+      <li><b>整个文件夹拷进模型目录</b><span><code id="emptyPath">1_模型查看器\data\model\tileset\</code>，保持 <code>tileset.json</code> 在文件夹根层</span></li>
+      <li><b>点重新检测</b><span>或者等它自动发现；也可以点下面的"选择其他 tileset.json"手动指定路径</span></li>
+    </ol>
+    <div class="empty-actions">
+      <button id="btnRecheck" class="btn btn-primary">重新检测</button>
+      <button id="btnTrySelf" class="btn">先看自检模型</button>
+      <button id="btnTypePath" class="btn">手动指定 tileset.json</button>
+    </div>
+    <p class="empty-note" id="emptyNote">当前等待路径：<code>data/model/tileset/tileset.json</code></p>
+  </div>
+</div>
+
+<!-- ================= 轻提示 ================= -->
+<div id="toast" class="toast"></div>
+
+<script src="lib/cesium/Cesium.js"></script>
+<script src="js/config.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
