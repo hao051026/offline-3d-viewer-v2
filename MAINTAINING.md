@@ -103,7 +103,7 @@ git reflog expire --expire=now --all
 git gc --prune=now --aggressive
 
 # 5. 强推（filter-repo 会删掉 remote，要先加回来）
-git remote add origin https://github.com/hao051026/offline-3d-viewer.git
+git remote add origin https://github.com/hao051026/offline-3d-viewer-v2.git
 git push --force origin main
 ```
 
