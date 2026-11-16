@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>功能自检</title>
+<style>
+  body{
+    margin:0; padding:22px 26px; min-height:100vh;
+    background:#0d1b2a; color:#e8f4fd;
+    font-family:"Microsoft YaHei","Segoe UI",sans-serif; font-size:13px;
+  }
+  #result{ max-width:900px; }
+  code{ font-family:Consolas,monospace; background:rgba(255,255,255,.06); padding:1px 5px; border-radius:3px; }
+</style>
+</head>
+<body>
+<!-- app.js 需要这些 DOM 节点才能初始化，给一个最小可用的壳 -->
+<div id="cesiumContainer" style="position:fixed;left:-3000px;top:0;width:800px;height:600px;"></div>
+<div id="toast" class="toast" style="display:none"></div>
+<div id="emptyState" class="empty hidden" style="display:none">
+  <div class="empty-card">
+    <h2 id="emptyTitle"></h2><p id="emptyDesc"></p>
+    <p id="emptyNote"></p><code id="emptyPath"></code>
+    <button id="btnRecheck"></button><button id="btnTrySelf"></button><button id="btnTypePath"></button>
+  </div>
+</div>
+<div id="panel" class="panel-hidden"><div id="panelTitle"></div><div id="panelBody"></div>
+  <button id="btnPanelClose"></button></div>
+<div id="modelSelect"></div><button id="btnReloadModel"></button><span id="modelState"></span>
+<button id="btnFullscreen"></button><button id="btnShot"></button>
+<span id="statTiles"></span><span id="statFps"></span><span id="statCam"></span><span id="statHint"></span>
+<h1 id="appTitle"></h1><p id="appSub"></p>
+<div id="result" style="position:relative;z-index:10;background:#0d1b2a;">
+  <p style="color:#7a9cc8">正在运行自检…</p>
+</div>
+
+<!-- 主查看器的全部脚本，保证要测的东西跟真实环境一致 -->
+<script src="lib/cesium/Cesium.js"></script>
+<script src="js/config.js"></script>
+<script src="js/app.js"></script>
+<script src="__selftest.js"></script>
+</body>
+</html>

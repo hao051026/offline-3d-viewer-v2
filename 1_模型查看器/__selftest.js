@@ -1,0 +1,295 @@
+/**
+ * 功能自检页：在浏览器里跑一遍核心功能，把结果打到页面上
+ * 用法：http://127.0.0.1:8820/__selftest.html
+ *
+ * 只验证纯逻辑（不依赖真实渲染时序的部分），
+ * 渲染相关的靠人工看主页面。
+ */
+(function () {
+  "use strict";
+  var out = [];
+  var pass = 0, fail = 0;
+
+  function log(ok, name, detail) {
+    if (ok) pass++; else fail++;
+    out.push({ ok: ok, name: name, detail: detail || "" });
+  }
+
+  function run() {
+    var CES = window.Cesium;
+    if (!CES) { log(false, "Cesium 加载", "未加载"); render(); return; }
+    log(true, "Cesium 加载", "OK");
+
+    // 1. 图标形状：9 种都能生成
+    var shapes = window.__XZ_ICON_SHAPES;
+    if (!shapes) { log(false, "图标形状", "ICON_SHAPES 未暴露"); }
+    else {
+      let okCount = 0, sizes = [];
+      shapes.forEach(function (s) {
+        try {
+          var url = window.__XZ_iconUrl("#00d4aa", s);
+          if (url && url.indexOf("data:image/png") === 0 && url.length > 500) { okCount++; sizes.push(url.length); }
+        } catch (e) { /* ignore */ }
+      });
+      log(okCount === shapes.length, "图标形状生成",
+        okCount + "/" + shapes.length + " 种，数据长度 " + Math.min.apply(null, sizes) + "~" + Math.max.apply(null, sizes));
+    }
+
+    // 2. 未知形状回退到 pin
+    try {
+      var fallback = window.__XZ_iconUrl("#ff0000", "unknown-shape-xyz");
+      log(!!fallback && fallback.length > 500, "未知形状回退 pin", "OK");
+    } catch (e) { log(false, "未知形状回退 pin", String(e)); }
+
+    // 3. 图标缓存命中
+    try {
+      var a = window.__XZ_iconUrl("#123456", "star");
+      var b = window.__XZ_iconUrl("#123456", "star");
+      log(a === b, "图标缓存", a === b ? "同一实例" : "重复生成");
+    } catch (e) { log(false, "图标缓存", String(e)); }
+
+    // 4. 模型类型识别
+    var detect = window.__XZ_detectModelType;
+    if (!detect) { log(false, "模型类型识别", "未暴露"); }
+    else {
+      var cases = [
+        ["data/model/a/tileset.json", "tiles"],
+        ["data/model/a.glb", "glb"],
+        ["data/model/a.GLB", "glb"],
+        ["data/model/a.gltf", "glb"],
+        ["data/model/a.glb?v=1", "glb"],
+        ["/abs/path/tileset.json", "tiles"]
+      ];
+      var ok = cases.every(function (c) { return detect(c[0]) === c[1]; });
+      log(ok, "模型类型识别", cases.length + " 个用例");
+    }
+
+    // 5. 名称推断
+    var nameFrom = window.__XZ_nameFromUrl;
+    if (!nameFrom) { log(false, "名称推断", "未暴露"); }
+    else {
+      var n1 = nameFrom("data/model/教室/tileset.json");
+      var n2 = nameFrom("data/model/小镇.glb");
+      var n3 = nameFrom("a.json");
+      log(n1 === "教室" && n2 === "小镇" && n3 === "a",
+        "名称推断", [n1, n2, n3].join(" / "));
+    }
+
+    // 6. 唯一 id：无冲突时原样返回，有冲突时追加序号
+    var uniq = window.__XZ_uniqModelId;
+    if (!uniq) { log(false, "唯一 id", "未暴露"); }
+    else {
+      var S = window.__XZ_STATE;
+      // 用一个一定没被占用的名字
+      var freeName = "__no_such_model_" + Date.now();
+      var u1 = uniq(freeName);
+      log(u1 === freeName, "唯一 id 无冲突时原样", freeName.slice(0, 18) + "… -> " + u1.slice(0, 18) + "…");
+      // 造一个冲突：临时塞进 S.models
+      var fakeId = "__dup_test_" + Date.now();
+      S.models.push({ id: fakeId, name: "临时占位", tileset: null });
+      var u2 = uniq(fakeId);
+      S.models.pop();
+      log(u2 !== fakeId && u2.indexOf(fakeId) === 0, "唯一 id 冲突时追加序号", fakeId.slice(0, 14) + "… -> " + u2.slice(0, 18) + "…");
+    }
+
+    // 7. 多模型包围球
+    var sbs = window.__XZ_sceneBoundingSphere;
+    if (!sbs) { log(false, "多模型包围球", "未暴露"); }
+    else {
+      var bs = sbs();
+      log(!!bs && isFinite(bs.radius) && bs.radius > 0,
+        "多模型包围球", bs ? ("半径 " + bs.radius.toFixed(1) + " m") : "null");
+    }
+
+    // 8. 当前模型数量
+    var S2 = window.__XZ_STATE;
+    log(S2.models.length >= 1, "模型已加载", S2.models.length + " 个：" +
+      S2.models.map(function (m) { return m.name; }).join(", "));
+
+    // 9. 标签图层
+    log(S2.layers.length >= 1, "标签图层", S2.layers.length + " 层，共 " +
+      S2.layers.reduce(function (a, l) { return a + (l.count || 0); }, 0) + " 要素");
+
+    // 10. 图层面板能打开
+    try {
+      window.__XZ_openPanel("layer");
+      var body = document.getElementById("panelBody");
+      var hasModelSec = body.innerHTML.indexOf("模型（") >= 0;
+      var hasAddModel = !!document.getElementById("lnkAddModel");
+      var hasAddLabel = !!document.getElementById("lnkAddLabel");
+      log(hasModelSec && hasAddModel && hasAddLabel, "图层面板结构",
+        "模型区=" + hasModelSec + " 添加模型=" + hasAddModel + " 添加标签=" + hasAddLabel);
+    } catch (e) { log(false, "图层面板结构", String(e)); }
+
+    // 11. 添加模型对话框
+    try {
+      window.__XZ_openAddModelDialog();
+      var dlg = document.getElementById("addModelDlg");
+      var visible = dlg && !dlg.classList.contains("hidden");
+      var hasPath = !!document.getElementById("dlgModelPath");
+      var hasGeo = !!document.getElementById("dlgModelLon");
+      log(visible && hasPath && hasGeo, "添加模型对话框", "可见=" + visible + " 路径框=" + hasPath + " 经纬度框=" + hasGeo);
+      window.__XZ_closeAddModelDialog();
+    } catch (e) { log(false, "添加模型对话框", String(e)); }
+
+    // 12. 添加标签对话框 + 形状选择器
+    try {
+      window.__XZ_openAddLabelDialog();
+      var dlg2 = document.getElementById("addLabelDlg");
+      var vis2 = dlg2 && !dlg2.classList.contains("hidden");
+      var shapeBtns = dlg2 ? dlg2.querySelectorAll(".shape-btn") : [];
+      var hasFile = !!document.getElementById("dlgLabelFile");
+      var hasColor = !!document.getElementById("dlgLabelColor");
+      log(vis2 && shapeBtns.length === 9 && hasFile && hasColor,
+        "添加标签对话框",
+        "可见=" + vis2 + " 形状按钮=" + shapeBtns.length + " 文件框=" + hasFile + " 选色=" + hasColor);
+      window.__XZ_closeAddLabelDialog();
+    } catch (e) { log(false, "添加标签对话框", String(e)); }
+
+    // 13. 标签数据的图标形状能应用
+    try {
+      var before2 = S2.layers.length;
+      var testData = {
+        version: 1,
+        name: "自检标签",
+        groups: [{ id: "g1", name: "箭头组", color: "#ff5b5b", icon: "arrow" }],
+        features: [
+          { id: "T1", group: "g1", name: "箭头点", type: "point", coordinates: [108.9, 34.0, 600] },
+          { id: "T2", group: "g1", name: "星标点", type: "point", coordinates: [108.9002, 34.0002, 600], icon: "star" }
+        ]
+      };
+      window.__XZ_applyLabelData({ id: "selftest-" + Date.now(), name: "形状自检" }, testData);
+      var added = S2.layers.length - before2;
+      log(added === 1, "标签分组图标", "新增 " + added + " 层");
+      // 清理
+      var lastLayer = S2.layers[S2.layers.length - 1];
+      if (lastLayer && lastLayer.sourceId && lastLayer.sourceId.indexOf("selftest-") === 0) {
+        window.__XZ_removeLabelSource(lastLayer.sourceId);
+        log(true, "标签源移除", "已清理");
+      }
+    } catch (e) { log(false, "标签分组图标", String(e)); }
+
+    // 14. localStorage 持久化键
+    try {
+      log(typeof localStorage !== "undefined", "localStorage 可用", "OK");
+    } catch (e) { log(false, "localStorage 可用", String(e)); }
+
+    // 15. 多模型同时加载（关键功能）
+    var S3 = window.__XZ_STATE;
+    var all = (window.VIEWER_CONFIG.models || []);
+    var second = null;
+    for (var i = 0; i < all.length; i++) {
+      var already = S3.models.some(function (m) { return m.url === all[i].url; });
+      if (!already) { second = all[i]; break; }
+    }
+    if (!second) {
+      log(false, "多模型同时加载", "config 里没有第二个可用模型");
+    } else {
+      window.__XZ_multiTest = function () {
+        // 等一下让 addModel 完成
+        var waited = 0;
+        var t = setInterval(function () {
+          waited += 100;
+          if (S3.models.length >= 2 || waited > 15000) {
+            clearInterval(t);
+            var names = S3.models.map(function (m) { return m.name; });
+            var allShown = S3.models.every(function (m) { return m.tileset && m.tileset.show; });
+            log(S3.models.length >= 2, "多模型同时加载",
+              S3.models.length + " 个：" + names.join(" + ") + "，全部可见=" + allShown);
+
+            var bs2 = window.__XZ_sceneBoundingSphere();
+            log(!!bs2 && (S3.models.length < 2 || bs2.radius > 0),
+              "多模型合并包围球", bs2 ? ("半径 " + bs2.radius.toFixed(1) + " m") : "null");
+
+            // 独立显隐
+            var m0 = S3.models[0];
+            if (m0 && m0.tileset) {
+              m0.tileset.show = false;
+              var hiddenOk = m0.tileset.show === false;
+              m0.tileset.show = true;
+              log(hiddenOk, "单模型独立显隐", "切换后恢复");
+            }
+
+            // 移除一个模型
+            var before = S3.models.length;
+            var idToRemove = S3.models[S3.models.length - 1].id;
+            window.XZ3D.removeModel(idToRemove, true);
+            log(S3.models.length === before - 1, "移除单个模型",
+              before + " -> " + S3.models.length);
+
+            render();
+          }
+        }, 100);
+      };
+      window.XZ3D.addModel(second, { zoom: false }).then(function () {
+        setTimeout(window.__XZ_multiTest, 300);
+      }).catch(function (e) {
+        log(false, "多模型同时加载", "第二个模型加载失败：" + (e && e.message || e));
+        render();
+      });
+      return;   // render 由 multiTest 负责
+    }
+
+    render();
+  }
+
+  function render() {
+    var html = '<h1 style="font-size:18px;margin:0 0 4px">功能自检</h1>' +
+      '<p style="color:#8fa3b6;margin:0 0 16px;font-size:13px">' +
+      '通过 ' + pass + ' / 失败 ' + fail + '（共 ' + (pass + fail) + ' 项）</p>';
+    html += '<table style="width:100%;border-collapse:collapse;font-size:13px">';
+    out.forEach(function (r) {
+      var color = r.ok ? "#00d4aa" : "#ff6b6b";
+      html += '<tr style="border-bottom:1px solid #1a3048">' +
+        '<td style="width:26px;color:' + color + ';font-weight:700;padding:7px 4px">' + (r.ok ? "✓" : "✗") + '</td>' +
+        '<td style="padding:7px 8px;color:#e8f4fd">' + r.name + '</td>' +
+        '<td style="padding:7px 4px;color:#7a9cc8;font-size:12px">' + (r.detail || "") + '</td></tr>';
+    });
+    html += "</table>";
+
+    var el = document.getElementById("result");
+    el.innerHTML = html;
+    document.title = (fail === 0 ? "全部通过" : (fail + " 项失败")) + " - 功能自检";
+  }
+
+  // 挂到 body 后面
+  window.addEventListener("load", function () {
+    // 主页面脚本是异步 boot 的，等它准备好
+    var tries = 0;
+    var timer = setInterval(function () {
+      tries++;
+      if (window.__XZ_STATE && window.__XZ_ICON_SHAPES) {
+        clearInterval(timer);
+        // 先确保至少有一个模型在场景里（自检页无 config 默认模型时手动加一个）
+        ensureModelThenRun();
+      } else if (tries > 60) {
+        clearInterval(timer);
+        document.getElementById("result").innerHTML =
+          '<p style="color:#ff6b6b">主页面脚本未就绪（等待 6 秒超时）</p>';
+      }
+    }, 100);
+  });
+
+  function ensureModelThenRun() {
+    var S = window.__XZ_STATE;
+    if (S.models.length) { run(); return; }
+
+    document.getElementById("result").innerHTML =
+      '<p style="color:#7a9cc8">正在加载自检模型…</p>';
+
+    // 用自检模型（一定存在，体积小）
+    var self = null;
+    (window.VIEWER_CONFIG.models || []).forEach(function (m) {
+      if (m.id === "selftest") self = m;
+    });
+    if (!self) self = (window.VIEWER_CONFIG.models || [])[0];
+    if (!self) { run(); return; }
+
+    window.XZ3D.addModel(self, { zoom: false }).then(function () {
+      // 给渲染一点时间
+      setTimeout(run, 800);
+    }).catch(function () {
+      setTimeout(run, 200);
+    });
+  }
+})();

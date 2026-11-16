@@ -35,13 +35,27 @@ window.VIEWER_CONFIG = {
   ],
 
   /* ---------------- 矢量标签 ---------------- */
-  /* type: "kml" 直接读司空2导出的KML；"json" 读自定义标签（字段见 labels.json 注释） */
+  /* type: "kml" 直接读司空2导出的KML；"json" 读自定义标签（字段见 labels.json 注释）
+     icon: 可选，图标形状（pin / arrow / dot / flag / warn / star / cross / square / triangle）
+     不填则用 pin（针形标记）。形状在 js/app.js 的 ICON_SHAPES 里可以继续加。 */
   labels: [
     { id: "congestion", name: "小冉拥堵路段标注", type: "json", url: "data/vector/拥堵路段.json", enabled: true,  color: "#00d4aa" },
     { id: "dj-kml", name: "司空2 标注（KML 原样）", type: "kml",  url: "data/vector/重点拥堵路段.kml", enabled: false, color: "#ff5b5b" },
     { id: "survey", name: "病害标签（JSON）",   type: "json", url: "data/vector/labels.json",  enabled: false, color: "#ffc53d" },
     { id: "selftest", name: "自检标签",         type: "json", url: "data/vector/自检标签.json", enabled: false, color: "#00d4aa" }
   ],
+
+  /* ---------------- 多模型同时显示 ---------------- */
+  /* true = 允许多个模型同时在场景里（默认开启）
+     顶栏选择器选中模型时默认"加入场景"，图层面板可单独移除 */
+  multiModel: true,
+
+  /* 新增模型时的默认缩放（米），只对 .glb 单模型生效 */
+  glbDefaultSize: 100,
+
+  /* ---------------- 本地记忆 ---------------- */
+  /* 用户手动添加的模型/标签记在浏览器里，下次打开自动恢复 */
+  rememberAdded: true,
 
   /* ---------------- 默认视角 ---------------- */
   /* 留 null 则每次加载模型后自动飞到模型整体范围（推荐）

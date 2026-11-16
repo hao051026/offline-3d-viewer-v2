@@ -12,11 +12,13 @@
   /* ------------------------------ 运行状态 ------------------------------ */
   var S = {
     viewer: null,
-    tileset: null,
+    tileset: null,             // 主模型（兼容旧代码；等于 models[0]）
+    models: [],                // 多模型：每条 { id, name, url, type, tileset, baseCenter, offset, show, ready }
     modelDef: null,
-    baseCenter: null,          // 模型原始包围球中心（ECEF），偏移量以此为基准
+    baseCenter: null,
     offset: { east: 0, north: 0, up: 0 },
-    layers: [],                // 图层条目
+    layers: [],                // 矢量图层
+    userLabels: [],            // 用户手动添加的标签源（可持久化）
     measure: { mode: null, points: [], preview: null },
     measureDS: null,
     selected: null,
@@ -116,30 +118,162 @@
       .catch(function () { return false; });
   }
 
-  /* 生成标签图标（纯本地 canvas 绘制，不依赖任何图片素材） */
+  /* ------------------------------ 标签图标 ------------------------------ */
+  /* 纯本地 canvas 绘制，不依赖任何图片素材。
+     形状可在 features[].icon 或分组 color/icon 里指定，默认 pin。 */
+  var ICON_SHAPES = ["pin", "arrow", "dot", "flag", "warn", "star", "cross", "square", "triangle"];
+  var ICON_SHAPE_CN = {
+    pin: "针形", arrow: "箭头", dot: "圆点", flag: "旗标", warn: "警告",
+    star: "星标", cross: "叉号", square: "方块", triangle: "三角"
+  };
   var iconCache = {};
-  function iconUrl(color) {
-    if (iconCache[color]) return iconCache[color];
+
+  function iconUrl(color, shape) {
+    shape = shape || "pin";
+    var key = color + "|" + shape;
+    if (iconCache[key]) return iconCache[key];
+
     var size = 64, c = document.createElement("canvas");
     c.width = size; c.height = size;
     var g = c.getContext("2d");
-    // 针形标记
-    g.beginPath();
-    g.arc(32, 24, 14, Math.PI * 0.86, Math.PI * 0.14, false);
-    g.lineTo(32, 58);
-    g.closePath();
-    g.fillStyle = color;
-    g.fill();
     g.lineWidth = 3;
     g.strokeStyle = "rgba(255,255,255,.85)";
-    g.stroke();
-    // 内白点
-    g.beginPath();
-    g.arc(32, 24, 5.5, 0, Math.PI * 2);
-    g.fillStyle = "rgba(255,255,255,.92)";
-    g.fill();
-    iconCache[color] = c.toDataURL("image/png");
-    return iconCache[color];
+    g.fillStyle = color;
+
+    switch (shape) {
+      case "arrow":
+        // 向上的箭头（适合指示方向、车流）
+        g.beginPath();
+        g.moveTo(32, 6);           // 箭尖
+        g.lineTo(52, 30);
+        g.lineTo(41, 30);
+        g.lineTo(41, 54);
+        g.lineTo(23, 54);
+        g.lineTo(23, 30);
+        g.lineTo(12, 30);
+        g.closePath();
+        g.fill();
+        g.stroke();
+        break;
+
+      case "dot":
+        // 实心圆点（最轻量，适合大量点位）
+        g.beginPath();
+        g.arc(32, 32, 17, 0, Math.PI * 2);
+        g.fill();
+        g.stroke();
+        g.beginPath();
+        g.arc(32, 32, 6, 0, Math.PI * 2);
+        g.fillStyle = "rgba(255,255,255,.92)";
+        g.fill();
+        break;
+
+      case "flag":
+        // 旗杆 + 三角旗面（适合里程碑、节点）
+        g.beginPath();
+        g.moveTo(20, 8);
+        g.lineTo(20, 56);
+        g.stroke();
+        g.beginPath();
+        g.moveTo(22, 10);
+        g.lineTo(52, 20);
+        g.lineTo(22, 30);
+        g.closePath();
+        g.fill();
+        g.stroke();
+        break;
+
+      case "warn":
+        // 三角形警告（适合病害、隐患）
+        g.beginPath();
+        g.moveTo(32, 8);
+        g.lineTo(56, 52);
+        g.lineTo(8, 52);
+        g.closePath();
+        g.fill();
+        g.stroke();
+        g.fillStyle = "rgba(255,255,255,.95)";
+        g.fillRect(29, 24, 6, 16);
+        g.beginPath();
+        g.arc(32, 45, 3.4, 0, Math.PI * 2);
+        g.fill();
+        break;
+
+      case "star":
+        // 五角星（适合重点、关注点）
+        g.beginPath();
+        for (var i = 0; i < 10; i++) {
+          var r = (i % 2 === 0) ? 24 : 10;
+          var a = -Math.PI / 2 + i * Math.PI / 5;
+          var px = 32 + Math.cos(a) * r;
+          var py = 32 + Math.sin(a) * r;
+          if (i === 0) g.moveTo(px, py); else g.lineTo(px, py);
+        }
+        g.closePath();
+        g.fill();
+        g.stroke();
+        break;
+
+      case "cross":
+        // 叉号（适合封闭、禁行）
+        g.beginPath();
+        g.moveTo(14, 14); g.lineTo(50, 50);
+        g.moveTo(50, 14); g.lineTo(14, 50);
+        g.lineWidth = 10;
+        g.lineCap = "round";
+        g.strokeStyle = color;
+        g.stroke();
+        g.lineWidth = 4;
+        g.strokeStyle = "rgba(255,255,255,.9)";
+        g.stroke();
+        break;
+
+      case "square":
+        // 方块（适合设施、设备）
+        g.beginPath();
+        g.rect(14, 14, 36, 36);
+        g.fill();
+        g.stroke();
+        g.beginPath();
+        g.rect(24, 24, 16, 16);
+        g.fillStyle = "rgba(255,255,255,.85)";
+        g.fill();
+        break;
+
+      case "triangle":
+        // 正三角（适合提示、单向）
+        g.beginPath();
+        g.moveTo(32, 10);
+        g.lineTo(54, 50);
+        g.lineTo(10, 50);
+        g.closePath();
+        g.fill();
+        g.stroke();
+        break;
+
+      case "pin":
+      default:
+        // 针形标记（默认，最通用）
+        g.beginPath();
+        g.arc(32, 24, 14, Math.PI * 0.86, Math.PI * 0.14, false);
+        g.lineTo(32, 58);
+        g.closePath();
+        g.fill();
+        g.stroke();
+        g.beginPath();
+        g.arc(32, 24, 5.5, 0, Math.PI * 2);
+        g.fillStyle = "rgba(255,255,255,.92)";
+        g.fill();
+        break;
+    }
+
+    iconCache[key] = c.toDataURL("image/png");
+    return iconCache[key];
+  }
+
+  /* 图标锚点：针形/旗标底部固定在地面，其余居中 */
+  function iconVerticalOrigin(shape) {
+    return (shape === "pin" || shape === "flag") ? CES.VerticalOrigin.BOTTOM : CES.VerticalOrigin.CENTER;
   }
 
   /* ------------------------------ 初始化场景 ------------------------------ */
@@ -186,8 +320,38 @@
     window.XZ3D = {
       viewer: v,
       state: S,
-      get tileset() { return S.tileset; }
+      get tileset() { return S.tileset; },
+      get models() { return S.models; },
+      get layers() { return S.layers; },
+      addModel: addModel,
+      removeModel: removeModel,
+      fitAll: viewModelDirect,
+      fly: flyToModel,
+      // 自检用：把内部函数暴露出来
+      _internals: {
+        iconUrl: iconUrl, ICON_SHAPES: ICON_SHAPES, ICON_SHAPE_CN: ICON_SHAPE_CN,
+        detectModelType: detectModelType, nameFromUrl: nameFromUrl, uniqModelId: uniqModelId,
+        sceneBoundingSphere: sceneBoundingSphere, applyLabelData: applyLabelData,
+        removeLabelSource: removeLabelSource, openPanel: openPanel,
+        openAddModelDialog: openAddModelDialog, closeAddModelDialog: closeAddModelDialog,
+        openAddLabelDialog: openAddLabelDialog, closeAddLabelDialog: closeAddLabelDialog
+      }
     };
+    // 自检页用（避免多一层解引用）
+    window.__XZ_iconUrl = iconUrl;
+    window.__XZ_ICON_SHAPES = ICON_SHAPES;
+    window.__XZ_detectModelType = detectModelType;
+    window.__XZ_nameFromUrl = nameFromUrl;
+    window.__XZ_uniqModelId = uniqModelId;
+    window.__XZ_sceneBoundingSphere = sceneBoundingSphere;
+    window.__XZ_applyLabelData = applyLabelData;
+    window.__XZ_removeLabelSource = removeLabelSource;
+    window.__XZ_openPanel = openPanel;
+    window.__XZ_openAddModelDialog = openAddModelDialog;
+    window.__XZ_closeAddModelDialog = closeAddModelDialog;
+    window.__XZ_openAddLabelDialog = openAddLabelDialog;
+    window.__XZ_closeAddLabelDialog = closeAddLabelDialog;
+    window.__XZ_STATE = S;
 
     bindPicking();
     bindCameraStatus();
@@ -201,112 +365,246 @@
     });
   }
 
-  /* ------------------------------ 模型加载 ------------------------------ */
-  function clearModel() {
-    if (S.tileset) {
-      S.viewer.scene.primitives.remove(S.tileset);
-      S.tileset = null;
-    }
-    S.baseCenter = null;
-    S.modelReady = false;
-    $("statTiles").textContent = "瓦片 —";
+  /* ------------------------------ 模型加载（多模型） ------------------------------ */
+
+  /* 判定一个路径是 3D Tiles 还是单文件 GLB */
+  function detectModelType(url) {
+    var u = String(url || "").toLowerCase().split("?")[0];
+    if (/\.(glb|gltf)$/.test(u)) return "glb";
+    return "tiles";
   }
 
-  function loadModel(def, opts) {
+  /* 从 URL 推断显示名（去掉路径和扩展名） */
+  function nameFromUrl(url) {
+    var s = String(url || "").replace(/\\/g, "/").split("/").filter(Boolean);
+    var last = s.length ? s[s.length - 1] : "模型";
+    var parent = s.length > 1 ? s[s.length - 2] : "";
+    if (/^tileset\.json$/i.test(last) && parent) return parent;
+    return last.replace(/\.(json|glb|gltf|b3dm)$/i, "") || "模型";
+  }
+
+  /* 找一个可用的模型 key（避免 id 冲突） */
+  function uniqModelId(base) {
+    var id = base || "model";
+    var n = 1;
+    while (S.models.some(function (m) { return m.id === id; })) {
+      n++;
+      id = base + "-" + n;
+    }
+    return id;
+  }
+
+  function findModel(id) {
+    for (var i = 0; i < S.models.length; i++) {
+      if (S.models[i].id === id) return S.models[i];
+    }
+    return null;
+  }
+
+  /* 场景里所有模型的总包围球（用于"回到全景"） */
+  function sceneBoundingSphere() {
+    var spheres = [];
+    S.models.forEach(function (m) {
+      if (m.tileset && m.tileset.show && m.tileset.boundingSphere) {
+        spheres.push(m.tileset.boundingSphere);
+      }
+    });
+    if (!spheres.length) return null;
+    if (spheres.length === 1) return spheres[0];
+    // 多个模型：取一个能包住全部的球
+    var min = new CES.Cartesian3(Number.MAX_VALUE, Number.MAX_VALUE, Number.MAX_VALUE);
+    var max = new CES.Cartesian3(-Number.MAX_VALUE, -Number.MAX_VALUE, -Number.MAX_VALUE);
+    spheres.forEach(function (bs) {
+      var r = bs.radius;
+      var c = bs.center;
+      min.x = Math.min(min.x, c.x - r); max.x = Math.max(max.x, c.x + r);
+      min.y = Math.min(min.y, c.y - r); max.y = Math.max(max.y, c.y + r);
+      min.z = Math.min(min.z, c.z - r); max.z = Math.max(max.z, c.z + r);
+    });
+    var center = new CES.Cartesian3((min.x + max.x) / 2, (min.y + max.y) / 2, (min.z + max.z) / 2);
+    var radius = CES.Cartesian3.distance(center, max);
+    return new CES.BoundingSphere(center, radius);
+  }
+
+  /* 同步"主模型"指针，让旧代码（状态栏、快捷键）继续可用 */
+  function syncPrimaryModel() {
+    var first = S.models[0] || null;
+    S.tileset = first ? first.tileset : null;
+    S.modelDef = first ? first : null;
+    S.baseCenter = first ? first.baseCenter : null;
+    S.offset = first ? first.offset : { east: 0, north: 0, up: 0 };
+    S.modelReady = S.models.some(function (m) { return m.ready; });
+  }
+
+  /* 加载一个模型并加入场景（不清理已有的） */
+  function addModel(def, opts) {
     opts = opts || {};
-    clearModel();
-    S.modelDef = def;
+    var type = def.type || detectModelType(def.url);
+    var entry = {
+      id: uniqModelId(def.id || "m"),
+      name: def.name || nameFromUrl(def.url),
+      url: def.url,
+      type: type,
+      tileset: null,
+      baseCenter: null,
+      offset: { east: 0, north: 0, up: 0 },
+      show: true,
+      ready: false,
+      userAdded: !!def.userAdded,
+      loading: true
+    };
+    S.models.push(entry);
     setModelState("wait", "加载中…");
     $("emptyState").classList.add("hidden");
 
     var url = encodeURI(def.url);
-    // 只用最稳的默认遍历（不做 skipLevelOfDetail 跳过式细化）：
-    // 跳过式细化在瓦片层级浅、几何误差为 0 的 tileset 上会漏选根瓦片，画面直接全黑
-    var tsOpts = {
-      maximumScreenSpaceError: CFG.scene.maxScreenSpaceError || 16
-    };
+    var p;
 
-    var ready = null;
-    try {
-      // 新版 Cesium 用 fromUrl；老版用 readyPromise。两条路都兼容
-      if (typeof CES.Cesium3DTileset.fromUrl === "function") {
-        ready = CES.Cesium3DTileset.fromUrl(url, tsOpts);
-      } else {
-        var cand = new CES.Cesium3DTileset({ url: url, maximumScreenSpaceError: tsOpts.maximumScreenSpaceError });
-        ready = cand.readyPromise || Promise.resolve(cand);
-        S.viewer.scene.primitives.add(cand);
+    if (type === "glb") {
+      // 单文件模型：用 Model.fromGltfAsync（新版）或 Model.fromGltf（老版）
+      var modelOpts = {
+        url: url,
+        show: true,
+        // 没有地理参照的 GLB 默认落在原点，这里给一个合理位置
+        scale: def.scale || 1
+      };
+      if (def.position) {
+        modelOpts.position = CES.Cartesian3.fromDegrees(
+          def.position[0], def.position[1], def.position[2] || 0);
       }
-    } catch (e) {
-      setModelState("err", "加载失败");
-      showEmpty("模型加载出错", String(e && e.message || e));
-      startWatch();
-      return;
+      try {
+        if (typeof CES.Model.fromGltfAsync === "function") {
+          p = CES.Model.fromGltfAsync(modelOpts);
+        } else {
+          var md = CES.Model.fromGltf(modelOpts);
+          p = md.readyPromise ? md.readyPromise : Promise.resolve(md);
+        }
+      } catch (e) {
+        p = Promise.reject(e);
+      }
+    } else {
+      var tsOpts = { maximumScreenSpaceError: CFG.scene.maxScreenSpaceError || 16 };
+      try {
+        if (typeof CES.Cesium3DTileset.fromUrl === "function") {
+          p = CES.Cesium3DTileset.fromUrl(url, tsOpts);
+        } else {
+          var cand = new CES.Cesium3DTileset({ url: url, maximumScreenSpaceError: tsOpts.maximumScreenSpaceError });
+          p = cand.readyPromise || Promise.resolve(cand);
+        }
+      } catch (e) {
+        p = Promise.reject(e);
+      }
     }
 
-    ready.then(function (ts) {
-      S.viewer.scene.primitives.add(ts);
-      S.tileset = ts;
-      S.baseCenter = CES.Cartesian3.clone(ts.boundingSphere.center, new CES.Cartesian3());
-      S.modelReady = true;
-      applyOffset();
-      setModelState("ok", "已加载");
+    return p.then(function (obj) {
+      S.viewer.scene.primitives.add(obj);
+      entry.tileset = obj;
+      entry.loading = false;
+      entry.ready = true;
+
+      // 记录原始包围球中心（偏移量的基准）
+      if (obj.boundingSphere) {
+        entry.baseCenter = CES.Cartesian3.clone(obj.boundingSphere.center, new CES.Cartesian3());
+      }
+
+      if (type === "tiles" && obj.allTilesLoaded) {
+        obj.allTilesLoaded.addEventListener(function () {
+          if (entry === findModel(entry.id)) updateTileStat();
+        });
+      }
+
+      syncPrimaryModel();
+      setModelState("ok", S.models.length > 1 ? ("已加载 " + S.models.length + " 个") : "已加载");
       $("statTiles").className = "stat loading";
       $("statTiles").textContent = "瓦片 …";
-      $("emptyState").classList.add("hidden");
-      stopWatch();
 
-      ts.allTilesLoaded.addEventListener(function () {
-        $("statTiles").className = "stat ready";
-        updateTileStat();
-      });
-
-      // 首屏定位
-      if (CFG.defaultView) {
-        S.viewer.camera.flyTo({
-          destination: CES.Cartesian3.fromDegrees(CFG.defaultView.lon, CFG.defaultView.lat, CFG.defaultView.height || 800),
-          orientation: {
-            heading: CES.Math.toRadians(CFG.defaultView.heading || 0),
-            pitch: CES.Math.toRadians(CFG.defaultView.pitch || -45),
-            roll: 0
-          },
-          duration: 1.6
-        });
-      } else if (opts.zoom !== false) {
+      // 首个模型自动定位；后续添加的不抢镜头（除非明确要求）
+      if (opts.zoom !== false && (S.models.length === 1 || opts.focus === true)) {
         viewModelDirect();
-        // 防御：tileset 刚创建时包围球可能还是默认值，这时摆位会飞到太空
         setTimeout(ensureModelVisible, 500);
         setTimeout(ensureModelVisible, 1600);
       }
 
-      toast("模型已加载：" + def.name);
+      toast("模型已加载：" + entry.name);
+      saveUserModels();
+      renderLayerPanel();
+      return entry;
     }).catch(function (err) {
-      clearModel();
-      setModelState("err", "加载失败");
-      showEmpty("模型加载失败",
-        "tileset.json 读取失败：" + String(err && err.message || err) +
-        "。常见原因：tileset.json 不在指定路径、瓦片文件没拷全，或没有通过本地服务打开（直接双击 index.html 会跨域失败）。");
-      $("emptyNote").innerHTML = "当前路径：<code>" + def.url + "</code>";
-      startWatch();
+      entry.loading = false;
+      entry.error = String(err && err.message || err);
+      // 从列表里移除失败的
+      S.models = S.models.filter(function (m) { return m !== entry; });
+      syncPrimaryModel();
+      if (!S.models.length) {
+        setModelState("err", "加载失败");
+        showEmpty("模型加载失败",
+          (type === "glb" ? "GLB 读取失败：" : "tileset.json 读取失败：") + entry.error +
+          "。常见原因：路径不对、文件没拷全，或没有通过本地服务打开（直接双击 index.html 会跨域失败）。");
+        $("emptyNote").innerHTML = "当前路径：<code>" + escapeHtml(def.url) + "</code>";
+      } else {
+        setModelState("ok", "已加载 " + S.models.length + " 个");
+      }
+      renderLayerPanel();
+      throw err;
     });
   }
 
-  function updateTileStat() {
-    if (!S.tileset) return;
-    var st = S.tileset.statistics || {};
-    var show = st.numberOfTilesSelected;
-    var total = st.numberOfTilesTotal;
-    if (typeof show === "number" && typeof total === "number") {
-      $("statTiles").textContent = "瓦片 " + show + " / " + total;
-    } else {
-      $("statTiles").textContent = "瓦片 已加载";
+  /* 从场景移除一个模型 */
+  function removeModel(id, silent) {
+    var m = findModel(id);
+    if (!m) return;
+    if (m.tileset) {
+      try { S.viewer.scene.primitives.remove(m.tileset); } catch (e) { /* ignore */ }
     }
+    S.models = S.models.filter(function (x) { return x !== m; });
+    syncPrimaryModel();
+    setModelState(S.models.length ? "ok" : "wait",
+      S.models.length ? ("已加载 " + S.models.length + " 个") : "等待模型");
+    if (!S.models.length) {
+      $("statTiles").textContent = "瓦片 —";
+      showEmpty("还没有检测到三维模型", "点「添加模型」选择本地 tileset.json 或 .glb 文件。");
+    }
+    if (!silent) { toast("已移除：" + m.name); saveUserModels(); }
+    renderLayerPanel();
   }
 
-  /* 直接把相机摆到模型正南方的斜上方（不做动画）。
+  /* 清空全部模型（加载单个时用） */
+  function clearAllModels() {
+    S.models.slice().forEach(function (m) { removeModel(m.id, true); });
+    S.models = [];
+    syncPrimaryModel();
+    $("statTiles").textContent = "瓦片 —";
+  }
+
+  /* 兼容旧接口：清空后加载单个模型 */
+  function clearModel() {
+    clearAllModels();
+  }
+
+  function loadModel(def, opts) {
+    opts = opts || {};
+    if (!CFG.multiModel) clearAllModels();
+    return addModel(def, opts);
+  }
+
+  function updateTileStat() {
+    if (!S.models.length) return;
+    // 汇总所有模型的瓦片统计
+    var show = 0, total = 0, any = false;
+    S.models.forEach(function (m) {
+      if (!m.tileset || !m.tileset.statistics) return;
+      var st = m.tileset.statistics;
+      if (typeof st.numberOfTilesSelected === "number") { show += st.numberOfTilesSelected; any = true; }
+      if (typeof st.numberOfTilesTotal === "number") { total += st.numberOfTilesTotal; any = true; }
+    });
+    $("statTiles").textContent = any ? ("瓦片 " + show + " / " + total) : "瓦片 已加载";
+  }
+
+  /* 直接把相机摆到全部模型正南方的斜上方（不做动画）。
      弱显卡、后台窗口、动画被节流时也能保证一打开就看得见模型 */
   function viewModelDirect() {
-    if (!S.tileset) return;
-    var bs = S.tileset.boundingSphere;
+    var bs = sceneBoundingSphere();
+    if (!bs) return;
     var range = Math.max(bs.radius * 2.6, 60);
     var pitchDeg = Math.max(-89.5, Math.min(89.5, (CFG.autoFlyPitch === undefined ? -55 : CFG.autoFlyPitch)));
     var pitch = CES.Math.toRadians(pitchDeg);
@@ -322,16 +620,16 @@
 
   /* 摆位兜底：如果相机被摆到远超模型尺寸的地方（包围球当时还没就绪），重新摆一次 */
   function ensureModelVisible() {
-    if (!S.tileset) return;
-    var bs = S.tileset.boundingSphere;
+    var bs = sceneBoundingSphere();
+    if (!bs) return;
     var h = S.viewer.camera.positionCartographic.height;
     var limit = bs.radius * 4 + 2000;
     if (!isFinite(h) || h > limit) viewModelDirect();
   }
 
   function flyToModel(pitchDeg, duration) {
-    if (!S.tileset) return;
-    var bs = S.tileset.boundingSphere;
+    var bs = sceneBoundingSphere();
+    if (!bs) return;
     var pitch = CES.Math.toRadians(Math.max(-89.5, Math.min(89.5, pitchDeg === undefined ? -55 : pitchDeg)));
     var range = Math.max(bs.radius * 2.2, 40);
     S.viewer.camera.flyToBoundingSphere(bs, {
@@ -340,18 +638,19 @@
     });
   }
 
-  /* 位置/高程微调：以模型原始包围球中心为基准做 ENU 平移 */
-  function applyOffset() {
-    if (!S.tileset || !S.baseCenter) return;
-    var o = S.offset;
+  /* 位置/高程微调：对指定模型（默认第一个）做 ENU 平移 */
+  function applyOffset(modelId) {
+    var m = modelId ? findModel(modelId) : (S.models[0] || null);
+    if (!m || !m.tileset || !m.baseCenter) return;
+    var o = m.offset;
     if (!o.east && !o.north && !o.up) {
-      S.tileset.modelMatrix = CES.Matrix4.clone(CES.Matrix4.IDENTITY);
+      m.tileset.modelMatrix = CES.Matrix4.clone(CES.Matrix4.IDENTITY);
       return;
     }
-    var enu = CES.Transforms.eastNorthUpToFixedFrame(S.baseCenter);
+    var enu = CES.Transforms.eastNorthUpToFixedFrame(m.baseCenter);
     var local = new CES.Cartesian3(o.east, o.north, o.up);
     var dEcef = CES.Matrix4.multiplyByPointAsVector(enu, local, new CES.Cartesian3());
-    S.tileset.modelMatrix = CES.Matrix4.fromTranslation(dEcef);
+    m.tileset.modelMatrix = CES.Matrix4.fromTranslation(dEcef);
   }
 
   function loadOffsetFromStorage() {
@@ -364,28 +663,322 @@
     } catch (e) { /* ignore */ }
   }
 
-  /* ------------------------------ 缺模型引导 + 自动监听 ------------------------------ */
+  /* ------------------------------ 缺模型引导 ------------------------------ */
   function showEmpty(title, desc) {
     $("emptyTitle").textContent = title || "还没有检测到三维模型";
     if (desc) $("emptyDesc").textContent = desc;
     $("emptyState").classList.remove("hidden");
   }
 
-  function startWatch() {
-    stopWatch();
-    S.watchTimer = setInterval(function () {
-      if (S.modelReady || !S.modelDef) return;
-      urlExists(S.modelDef.url).then(function (ok) {
-        if (ok) {
-          toast("检测到模型文件，正在自动加载…");
-          loadModel(S.modelDef);
-        }
-      });
-    }, 5000);
+  /* ------------------------------ 用户添加的模型/标签持久化 ------------------------------ */
+  function saveUserModels() {
+    if (!CFG.rememberAdded) return;
+    try {
+      var list = S.models.filter(function (m) { return m.userAdded; })
+        .map(function (m) { return { id: m.id, name: m.name, url: m.url, type: m.type }; });
+      localStorage.setItem("xz3d.userModels", JSON.stringify(list));
+    } catch (e) { /* ignore */ }
   }
 
-  function stopWatch() {
-    if (S.watchTimer) { clearInterval(S.watchTimer); S.watchTimer = null; }
+  function loadUserModels() {
+    if (!CFG.rememberAdded) return [];
+    try {
+      var raw = localStorage.getItem("xz3d.userModels");
+      return raw ? JSON.parse(raw) : [];
+    } catch (e) { return []; }
+  }
+
+  function saveUserLabels() {
+    if (!CFG.rememberAdded) return;
+    try {
+      var list = S.userLabels.map(function (d) {
+        return { id: d.id, name: d.name, type: d.type, color: d.color, icon: d.icon, data: d.data, url: d.url };
+      });
+      localStorage.setItem("xz3d.userLabels", JSON.stringify(list));
+    } catch (e) { /* 标签数据可能很大，超限就放弃记忆 */ }
+  }
+
+  function loadUserLabels() {
+    if (!CFG.rememberAdded) return [];
+    try {
+      var raw = localStorage.getItem("xz3d.userLabels");
+      return raw ? JSON.parse(raw) : [];
+    } catch (e) { return []; }
+  }
+
+  /* ------------------------------ 添加本地模型 ------------------------------ */
+  var modelDlg = null;
+
+  function openAddModelDialog() {
+    if (!modelDlg) buildModelDialog();
+    modelDlg.classList.remove("hidden");
+    var inp = $("dlgModelPath");
+    if (inp) { inp.value = ""; inp.focus(); }
+  }
+
+  function closeAddModelDialog() {
+    if (modelDlg) modelDlg.classList.add("hidden");
+  }
+
+  function buildModelDialog() {
+    var div = document.createElement("div");
+    div.id = "addModelDlg";
+    div.className = "modal hidden";
+    div.innerHTML =
+      '<div class="modal-card">' +
+        '<div class="modal-head"><b>添加本地模型</b>' +
+          '<button class="icon-btn" id="dlgModelClose" title="关闭">' +
+          '<svg viewBox="0 0 20 20"><path d="M6 6 L14 14 M14 6 L6 14" stroke-width="1.7"/></svg></button></div>' +
+        '<div class="modal-body">' +
+          '<p class="hint">支持 <b>3D Tiles</b>（tileset.json 的路径）和单文件 <b>GLB / glTF</b>。' +
+          '路径相对于 index.html，例如 <code>data/model/教室/tileset.json</code>。</p>' +
+          '<div class="form-row"><label>路径</label>' +
+            '<input type="text" id="dlgModelPath" placeholder="data/model/xxx/tileset.json" ' +
+            'style="flex:1;background:#0c141c;color:#dbe6f0;border:1px solid #1e2c3a;border-radius:6px;padding:8px 10px;font-size:12.5px;font-family:inherit;outline:none">' +
+          '</div>' +
+          '<div class="form-row"><label>名称</label>' +
+            '<input type="text" id="dlgModelName" placeholder="留空则自动命名" ' +
+            'style="flex:1;background:#0c141c;color:#dbe6f0;border:1px solid #1e2c3a;border-radius:6px;padding:8px 10px;font-size:12.5px;font-family:inherit;outline:none">' +
+          '</div>' +
+          '<div class="sec" style="margin-top:14px"><div class="sec-title"><span>可选：地理定位（仅 GLB 需要）</span></div>' +
+          '<div class="form-row"><label>经度</label><input type="number" id="dlgModelLon" step="0.000001" placeholder="108.9" style="flex:1;background:#0c141c;color:#dbe6f0;border:1px solid #1e2c3a;border-radius:6px;padding:7px 9px"><span class="unit">°</span></div>' +
+          '<div class="form-row"><label>纬度</label><input type="number" id="dlgModelLat" step="0.000001" placeholder="34.0" style="flex:1;background:#0c141c;color:#dbe6f0;border:1px solid #1e2c3a;border-radius:6px;padding:7px 9px"><span class="unit">°</span></div>' +
+          '<div class="form-row"><label>高程</label><input type="number" id="dlgModelH" step="1" placeholder="500" style="flex:1;background:#0c141c;color:#dbe6f0;border:1px solid #1e2c3a;border-radius:6px;padding:7px 9px"><span class="unit">m</span></div>' +
+          '</div>' +
+          '<div class="empty-actions" style="margin-top:16px">' +
+            '<button class="btn btn-primary" id="dlgModelAdd">添加并加载</button>' +
+            '<button class="btn" id="dlgModelCancel">取消</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(div);
+    modelDlg = div;
+
+    $("dlgModelClose").onclick = closeAddModelDialog;
+    $("dlgModelCancel").onclick = closeAddModelDialog;
+    div.onclick = function (e) { if (e.target === div) closeAddModelDialog(); };
+
+    $("dlgModelAdd").onclick = function () {
+      var p = ($("dlgModelPath").value || "").trim();
+      if (!p) { toast("先填模型路径", "warn"); return; }
+      p = p.replace(/\\/g, "/").replace(/^\.?\//, "");
+      var nm = ($("dlgModelName").value || "").trim();
+      var lon = $("dlgModelLon").value, lat = $("dlgModelLat").value, h = $("dlgModelH").value;
+      var def = {
+        id: "user-" + Date.now().toString(36),
+        name: nm || nameFromUrl(p),
+        url: p,
+        userAdded: true
+      };
+      if (lon !== "" && lat !== "") {
+        def.position = [+lon, +lat, h === "" ? 0 : +h];
+      }
+      closeAddModelDialog();
+      addModel(def, { focus: true }).catch(function () { /* 错误已在 addModel 内提示 */ });
+    };
+
+    $("dlgModelPath").onkeydown = function (e) {
+      if (e.key === "Enter") $("dlgModelAdd").click();
+    };
+  }
+
+  /* ------------------------------ 添加本地标签 ------------------------------ */
+  var labelDlg = null;
+
+  function openAddLabelDialog() {
+    if (!labelDlg) buildLabelDialog();
+    labelDlg.classList.remove("hidden");
+    var f = $("dlgLabelFile");
+    if (f) f.value = "";
+    var t = $("dlgLabelName");
+    if (t) t.value = "";
+  }
+
+  function closeAddLabelDialog() {
+    if (labelDlg) labelDlg.classList.add("hidden");
+  }
+
+  /* 标签形状选择器：一排小按钮，点一下切换 */
+  function buildShapePicker(containerId, current) {
+    var html = '<div class="shape-picker" id="' + containerId + '">';
+    ICON_SHAPES.forEach(function (s) {
+      html += '<button type="button" class="shape-btn' + (s === current ? " active" : "") +
+        '" data-shape="' + s + '" title="' + ICON_SHAPE_CN[s] + '">' +
+        '<img src="' + iconUrl("#dbe6f0", s) + '" alt="' + s + '"></button>';
+    });
+    html += "</div>";
+    return html;
+  }
+
+  function buildLabelDialog() {
+    var div = document.createElement("div");
+    div.id = "addLabelDlg";
+    div.className = "modal hidden";
+    div.innerHTML =
+      '<div class="modal-card">' +
+        '<div class="modal-head"><b>添加本地标签</b>' +
+          '<button class="icon-btn" id="dlgLabelClose" title="关闭">' +
+          '<svg viewBox="0 0 20 20"><path d="M6 6 L14 14 M14 6 L6 14" stroke-width="1.7"/></svg></button></div>' +
+        '<div class="modal-body">' +
+          '<p class="hint">支持 <b>标签 JSON</b>（本项目的格式）和 <b>KML</b>。' +
+          '也可以直接填写路径，或把文件拖进窗口。</p>' +
+          '<div class="form-row"><label>文件</label>' +
+            '<input type="file" id="dlgLabelFile" accept=".json,.kml,.geojson" ' +
+            'style="flex:1;color:#dbe6f0;font-size:12px">' +
+          '</div>' +
+          '<div class="form-row"><label>或路径</label>' +
+            '<input type="text" id="dlgLabelPath" placeholder="data/vector/xxx.json" ' +
+            'style="flex:1;background:#0c141c;color:#dbe6f0;border:1px solid #1e2c3a;border-radius:6px;padding:8px 10px;font-size:12.5px;font-family:inherit;outline:none">' +
+          '</div>' +
+          '<div class="form-row"><label>名称</label>' +
+            '<input type="text" id="dlgLabelName" placeholder="留空则自动命名" ' +
+            'style="flex:1;background:#0c141c;color:#dbe6f0;border:1px solid #1e2c3a;border-radius:6px;padding:8px 10px;font-size:12.5px;font-family:inherit;outline:none">' +
+          '</div>' +
+          '<div class="form-row"><label>颜色</label>' +
+            '<input type="color" id="dlgLabelColor" value="#00d4aa" ' +
+            'style="width:52px;height:30px;padding:2px;background:#0c141c;border:1px solid #1e2c3a;border-radius:6px;cursor:pointer">' +
+            '<span class="unit" style="width:auto">点击选色</span>' +
+          '</div>' +
+          '<div class="sec" style="margin-top:12px"><div class="sec-title"><span>图标形状</span></div>' +
+            buildShapePicker("dlgLabelShapes", "pin") +
+          '</div>' +
+          '<div class="empty-actions" style="margin-top:16px">' +
+            '<button class="btn btn-primary" id="dlgLabelAdd">添加标签</button>' +
+            '<button class="btn" id="dlgLabelCancel">取消</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(div);
+    labelDlg = div;
+
+    // 形状选择交互
+    var picked = "pin";
+    Array.prototype.forEach.call(div.querySelectorAll(".shape-btn"), function (btn) {
+      btn.onclick = function () {
+        picked = btn.getAttribute("data-shape");
+        Array.prototype.forEach.call(div.querySelectorAll(".shape-btn"), function (b) {
+          b.classList.toggle("active", b === btn);
+        });
+      };
+    });
+    div._pickedShape = function () { return picked; };
+
+    $("dlgLabelClose").onclick = closeAddLabelDialog;
+    $("dlgLabelCancel").onclick = closeAddLabelDialog;
+    div.onclick = function (e) { if (e.target === div) closeAddLabelDialog(); };
+
+    $("dlgLabelAdd").onclick = function () {
+      var fileInput = $("dlgLabelFile");
+      var pathVal = ($("dlgLabelPath").value || "").trim();
+      var nm = ($("dlgLabelName").value || "").trim();
+      var color = $("dlgLabelColor").value || "#00d4aa";
+      var shape = div._pickedShape();
+
+      var finish = function (def) {
+        def.color = color;
+        def.icon = shape;
+        addLabelSource(def);
+        closeAddLabelDialog();
+      };
+
+      // 优先用文件
+      if (fileInput.files && fileInput.files.length) {
+        readLabelFile(fileInput.files[0], function (def, err) {
+          if (err) { toast("读取失败：" + err, "err"); return; }
+          if (nm) def.name = nm;
+          finish(def);
+        });
+        return;
+      }
+
+      // 其次用路径
+      if (!pathVal) { toast("请选择文件或填写路径", "warn"); return; }
+      var p = pathVal.replace(/\\/g, "/").replace(/^\.?\//, "");
+      var isKml = /\.kml$/i.test(p);
+      finish({
+        id: "userlabel-" + Date.now().toString(36),
+        name: nm || nameFromUrl(p),
+        url: p,
+        type: isKml ? "kml" : "json",
+        userAdded: true
+      });
+    };
+  }
+
+  /* 读一个本地文件，返回可用的 def（JSON 直接解析，KML 走 url） */
+  function readLabelFile(file, cb) {
+    var name = file.name || "label";
+    var isKml = /\.kml$/i.test(name);
+    var fr = new FileReader();
+
+    if (isKml) {
+      // KML 交给 Cesium 的 KmlDataSource 解析，用 blob URL
+      fr.onload = function () {
+        var blob = new Blob([fr.result], { type: "application/vnd.google-earth.kml+xml" });
+        cb({
+          id: "userlabel-" + Date.now().toString(36),
+          name: name.replace(/\.kml$/i, ""),
+          url: URL.createObjectURL(blob),
+          type: "kml",
+          userAdded: true,
+          isBlob: true
+        });
+      };
+      fr.onerror = function () { cb(null, fr.error); };
+      fr.readAsText(file, "utf-8");
+      return;
+    }
+
+    fr.onload = function () {
+      var data;
+      try {
+        data = JSON.parse(fr.result);
+      } catch (e) {
+        cb(null, "不是合法的 JSON");
+        return;
+      }
+      cb({
+        id: "userlabel-" + Date.now().toString(36),
+        name: name.replace(/\.json$/i, ""),
+        type: "json",
+        data: data,
+        userAdded: true
+      });
+    };
+    fr.onerror = function () { cb(null, fr.error); };
+    fr.readAsText(file, "utf-8");
+  }
+
+  /* 把一份标签源加入场景（文件/路径/KML 三种都走这里） */
+  function addLabelSource(def) {
+    var task;
+    if (def.type === "kml") {
+      task = loadKML(def);
+    } else {
+      task = loadJSONLabels(def, def.data);
+    }
+    return task.then(function () {
+      S.userLabels.push(def);
+      saveUserLabels();
+      renderLayerPanel();
+      toast("标签已添加：" + def.name);
+      return true;
+    }).catch(function (err) {
+      toast("标签加载失败：" + (err && err.message || err), "err");
+      throw err;
+    });
+  }
+
+  /* 移除一整份标签源（包含它的所有分组） */
+  function removeLabelSource(sourceId) {
+    var removed = S.layers.filter(function (l) { return l.sourceId === sourceId; });
+    removed.forEach(function (l) {
+      if (l.ds) { try { S.viewer.dataSources.remove(l.ds, true); } catch (e) { /* ignore */ } }
+    });
+    S.layers = S.layers.filter(function (l) { return l.sourceId !== sourceId; });
+    S.userLabels = S.userLabels.filter(function (d) { return d.id !== sourceId; });
+    saveUserLabels();
+    renderLayerPanel();
   }
 
   /* ------------------------------ 矢量标签 ------------------------------ */
@@ -410,7 +1003,6 @@
     var lc = CFG.label || {};
     var props = f.properties || {};
     var text = f.showLabel === false ? null : (f.label || f.name || f.id);
-    var anchorOffset = new CES.Cartesian2(0, -22);
 
     if (f.type === "polyline") {
       var pts = (f.coordinates || []).map(function (c) {
@@ -457,75 +1049,104 @@
       name: f.name || f.id,
       position: pos
     };
-    if (f.icon) {
-      opts.billboard = {
-        image: f.icon,
-        scale: (lc.iconScale || 0.55) * (f.iconScale || 1),
-        verticalOrigin: CES.VerticalOrigin.BOTTOM,
-        disableDepthTestDistance: Number.POSITIVE_INFINITY,
-        scaleByDistance: new CES.NearFarScalar(300, 1.15, 3000, 0.6)
-      };
+    // 形状优先级：要素自带 icon > 分组 icon > 默认 pin
+    var shape = f.icon || f.iconShape || "pin";
+    var img = f.iconImage || f.icon || null;
+
+    // f.icon 既可能是形状名也可能是图片路径，这里区分
+    if (typeof f.icon === "string" && /\.(png|jpg|jpeg|gif|svg|webp)(\?|$)/i.test(f.icon)) {
+      img = f.icon;
+      shape = "pin";
     } else {
-      opts.billboard = {
-        image: iconUrl(color),
-        scale: (lc.iconScale || 0.55) * (f.iconScale || 1),
-        verticalOrigin: CES.VerticalOrigin.BOTTOM,
-        disableDepthTestDistance: Number.POSITIVE_INFINITY,
-        scaleByDistance: new CES.NearFarScalar(300, 1.15, 3000, 0.6)
-      };
+      img = f.iconImage || null;
     }
+
+    opts.billboard = {
+      image: img || iconUrl(color, shape),
+      scale: (lc.iconScale || 0.55) * (f.iconScale || 1),
+      verticalOrigin: img ? CES.VerticalOrigin.BOTTOM : iconVerticalOrigin(shape),
+      disableDepthTestDistance: Number.POSITIVE_INFINITY,
+      scaleByDistance: new CES.NearFarScalar(300, 1.15, 3000, 0.6)
+    };
+    // 形状对应的图标高度（针形/旗标是底部锚点，文字要再往上一点）
+    var anchorY = (shape === "pin") ? -22 : (shape === "flag" ? -34 : -20);
     if (text) {
       opts.label = entityLabelOpts(text, color);
-      opts.label.pixelOffset = anchorOffset;
+      opts.label.pixelOffset = new CES.Cartesian2(0, anchorY);
     }
     return addEntity(ds, opts, props);
   }
 
-  function loadJSONLabels(def) {
-    return fetch(def.url, { cache: "no-store" }).then(function (r) {
-      if (!r.ok) throw new Error("HTTP " + r.status);
-      return r.json();
-    }).then(function (data) {
-      var groups = {};
-      (data.groups || []).forEach(function (g) { groups[g.id] = g; });
+  /* 核心：把一份标签 JSON 渲染到场景里
+     data 可以是已经解析好的对象，也可以是 null（此时从 def.url 拉取） */
+  function applyLabelData(def, data) {
+    var groups = {};
+    (data.groups || []).forEach(function (g) { groups[g.id] = g; });
 
-      var usedGroups = {};
-      (data.features || []).forEach(function (f, i) {
-        var gid = f.group || "default";
-        if (!usedGroups[gid]) {
-          usedGroups[gid] = { id: gid, name: (groups[gid] && groups[gid].name) || (gid === "default" ? def.name : gid), color: (groups[gid] && groups[gid].color) || def.color || LAYER_COLORS[0], ds: null, entities: [] };
-        }
-        var bucket = usedGroups[gid];
-        if (!bucket.ds) {
-          // 注意：dataSources.add() 返回 Promise，不能直接当数据源用
-          bucket.ds = new CES.CustomDataSource(def.id + "-" + gid);
-          S.viewer.dataSources.add(bucket.ds);
-          // 分组可声明 visible:false（比如司空2 里标在模型范围之外的那批），
-          // 默认不显示，图层面板里还能再打开
-          bucket.ds.show = !(groups[gid] && groups[gid].visible === false);
-        }
-        f.id = f.id || (def.id + "-" + (i + 1));
-        var ent = createFeatureEntity(bucket.ds, f, bucket.color, bucket.name);
-        if (ent) bucket.entities.push(ent);
-      });
-
-      Object.keys(usedGroups).forEach(function (gid, idx) {
-        var b = usedGroups[gid];
-        S.layers.push({
-          id: def.id + "-" + gid,
-          name: b.name,
-          type: "矢量",
-          color: b.color,
-          count: b.entities.length,
-          enabled: b.ds.show,
-          entities: b.entities,
-          ds: b.ds,
-          missing: false
-        });
-      });
-      if (!Object.keys(usedGroups).length) {
-        S.layers.push({ id: def.id, name: def.name, type: "矢量", color: def.color, count: 0, enabled: false, missing: true, note: "文件里没有要素" });
+    var usedGroups = {};
+    (data.features || []).forEach(function (f, i) {
+      var gid = f.group || "default";
+      var gdef = groups[gid] || {};
+      if (!usedGroups[gid]) {
+        usedGroups[gid] = {
+          id: gid,
+          name: gdef.name || (gid === "default" ? def.name : gid),
+          color: gdef.color || def.color || LAYER_COLORS[0],
+          icon: gdef.icon || def.icon || "pin",     // 分组级图标形状
+          ds: null,
+          entities: []
+        };
       }
+      var bucket = usedGroups[gid];
+      if (!bucket.ds) {
+        bucket.ds = new CES.CustomDataSource(def.id + "-" + gid);
+        S.viewer.dataSources.add(bucket.ds);
+        // 分组可声明 visible:false，默认不显示，图层面板里还能再打开
+        bucket.ds.show = !(gdef.visible === false);
+      }
+      f.id = f.id || (def.id + "-" + (i + 1));
+      // 要素没指定 icon 时继承分组图标
+      if (!f.icon && !f.iconShape) f.icon = bucket.icon;
+      var ent = createFeatureEntity(bucket.ds, f, bucket.color, bucket.name);
+      if (ent) bucket.entities.push(ent);
+    });
+
+    Object.keys(usedGroups).forEach(function (gid) {
+      var b = usedGroups[gid];
+      S.layers.push({
+        id: def.id + "-" + gid,
+        sourceId: def.id,
+        name: b.name,
+        type: "矢量",
+        color: b.color,
+        icon: b.icon,
+        count: b.entities.length,
+        enabled: b.ds.show,
+        entities: b.entities,
+        ds: b.ds,
+        missing: false,
+        userAdded: !!def.userAdded
+      });
+    });
+    if (!Object.keys(usedGroups).length) {
+      S.layers.push({
+        id: def.id, sourceId: def.id, name: def.name, type: "矢量",
+        color: def.color, count: 0, enabled: false, missing: true,
+        note: "文件里没有要素"
+      });
+    }
+    return Object.keys(usedGroups).length > 0;
+  }
+
+  function loadJSONLabels(def, inlineData) {
+    var p = inlineData
+      ? Promise.resolve(inlineData)
+      : fetch(def.url, { cache: "no-store" }).then(function (r) {
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          return r.json();
+        });
+    return p.then(function (data) {
+      applyLabelData(def, data);
       return true;
     });
   }
@@ -1013,58 +1634,102 @@
     var total = 0;
     S.layers.forEach(function (l) { total += l.count || 0; });
 
-    var html = '<div class="sec"><div class="sec-title"><span>模型</span><span class="mini" id="layerModelName">' +
-      escapeHtml(S.modelDef ? S.modelDef.name : "—") + "</span></div>";
+    /* ---------- 模型区：多模型列表 ---------- */
+    var html = '<div class="sec"><div class="sec-title"><span>模型（' + S.models.length + '）</span>' +
+      '<span class="mini"><a href="#" id="lnkAddModel" style="color:#00d4aa;text-decoration:none">+ 添加</a></span></div>';
 
-    if (S.tileset) {
-      html += '<div class="layer-row" data-model-toggle="1"><span class="chk"></span>' +
-        '<span class="swatch" style="background:#4aa8ff"></span>' +
-        '<span class="lname">三维模型（3DTiles）</span><span class="lcount">' +
-        (S.tileset.show ? "显示中" : "已隐藏") + "</span></div>";
+    if (S.models.length) {
+      S.models.forEach(function (m) {
+        var shown = m.tileset ? m.tileset.show : false;
+        html += '<div class="layer-row" data-model="' + escapeHtml(m.id) + '">' +
+          '<span class="chk"' + (shown ? "" : ' style="opacity:.35"') + '></span>' +
+          '<span class="swatch" style="background:#4aa8ff"></span>' +
+          '<span class="lname">' + escapeHtml(m.name) + '</span>' +
+          (m.loading ? '<span class="tagm">加载中</span>' :
+            '<span class="lcount">' + (m.type === "glb" ? "GLB" : "3DTiles") + '</span>') +
+          '<button class="mini-x" data-model-del="' + escapeHtml(m.id) + '" title="移除此模型">×</button>' +
+          '</div>';
+      });
     } else {
-      html += '<div class="layer-row dead"><span class="chk" style="opacity:.4"></span>' +
-        '<span class="lname">三维模型未加载</span></div>';
+      html += '<p class="hint">还没有模型。点上面的「+ 添加」选择本地 <b>tileset.json</b> 或 <b>.glb</b> 文件。</p>';
     }
     html += "</div>";
 
-    html += '<div class="sec"><div class="sec-title"><span>矢量标签</span><span class="mini">共 ' + total + " 个要素</span></div>";
+    /* ---------- 标签区 ---------- */
+    html += '<div class="sec"><div class="sec-title"><span>矢量标签</span>' +
+      '<span class="mini">共 ' + total + ' 个要素 · ' +
+      '<a href="#" id="lnkAddLabel" style="color:#00d4aa;text-decoration:none">+ 添加</a></span></div>';
+
     if (!S.layers.length) {
-      html += '<p class="hint">还没有加载标签。把司空2 导出的 KML 放到 <b>data/vector/defect.kml</b>，或把标签 JSON 放到 <b>data/vector/labels.json</b>，刷新即生效。</p>';
+      html += '<p class="hint">还没有标签。点上面的「+ 添加」选择标签 JSON 或 KML 文件。</p>';
     } else {
       S.layers.forEach(function (l, i) {
         var cls = "layer-row" + (l.enabled ? "" : " off") + (l.missing ? " dead" : "");
+        var iconPrev = (l.count && !l.missing) ?
+          '<img class="layer-icon" src="' + iconUrl(l.color || "#888", l.icon || "pin") + '" alt="">' : '';
         html += '<div class="' + cls + '" data-layer="' + i + '">' +
           '<span class="chk"' + (l.missing ? ' style="opacity:.35"' : "") + '></span>' +
           '<span class="swatch" style="background:' + (l.color || "#888") + '"></span>' +
-          '<span class="lname">' + escapeHtml(l.name) + "</span>" +
+          '<span class="lname">' + escapeHtml(l.name) + '</span>' +
+          iconPrev +
           (l.missing ? '<span class="tagm">未提供</span>' : '<span class="lcount">' + l.count + "</span>") +
-          "</div>";
+          '</div>';
         if (l.note) html += '<p class="hint" style="margin:-2px 0 8px">' + escapeHtml(l.note) + "</p>";
       });
     }
     html += "</div>";
 
+    /* ---------- 批量显隐 ---------- */
     html += '<div class="sec">' +
       '<div class="form-row" style="gap:8px">' +
       '<button class="btn btn-sm" style="flex:1" id="btnAllOn">全部显示</button>' +
       '<button class="btn btn-sm" style="flex:1" id="btnAllOff">全部隐藏</button></div>' +
+      '<div class="form-row" style="gap:8px;margin-top:8px">' +
+      '<button class="btn btn-sm" style="flex:1" id="btnModelsOn">模型全显</button>' +
+      '<button class="btn btn-sm" style="flex:1" id="btnModelsOff">模型全隐</button></div>' +
       "</div>";
 
+    /* ---------- 定位 ---------- */
     html += '<div class="sec"><div class="sec-title"><span>定位要素</span></div>' +
       '<div class="form-row"><input type="text" id="findInput" placeholder="输入编号或名称，如 XS-001 / K1+000" ' +
       'style="flex:1;background:#0c141c;color:#dbe6f0;border:1px solid #1e2c3a;border-radius:6px;padding:8px 10px;font-size:12.5px;font-family:inherit;outline:none">' +
       '<button class="btn btn-sm" id="btnFind" style="flex:none">定位</button></div>' +
-      '<p class="hint">输入编号/名称后点定位，会直接飞到对应病害点并打开属性。</p></div>';
+      '<p class="hint">输入编号/名称后点定位，会直接飞到对应要素并打开属性。</p></div>';
 
     $("panelBody").innerHTML = html;
+    bindLayerPanelEvents();
+  }
 
-    var modelRow = $("panelBody").querySelector('[data-model-toggle="1"]');
-    if (modelRow) modelRow.onclick = function () {
-      S.tileset.show = !S.tileset.show;
-      renderLayerPanel();
-    };
+  function bindLayerPanelEvents() {
+    var body = $("panelBody");
 
-    Array.prototype.forEach.call($("panelBody").querySelectorAll("[data-layer]"), function (rowEl) {
+    // 添加入口
+    var addM = $("lnkAddModel");
+    if (addM) addM.onclick = function (e) { e.preventDefault(); openAddModelDialog(); };
+    var addL = $("lnkAddLabel");
+    if (addL) addL.onclick = function (e) { e.preventDefault(); openAddLabelDialog(); };
+
+    // 单击模型行 = 显隐切换
+    Array.prototype.forEach.call(body.querySelectorAll("[data-model]"), function (row) {
+      row.onclick = function (e) {
+        if (e.target.getAttribute && e.target.getAttribute("data-model-del")) return;
+        var m = findModel(row.getAttribute("data-model"));
+        if (!m || !m.tileset) return;
+        m.tileset.show = !m.tileset.show;
+        renderLayerPanel();
+      };
+    });
+
+    // 移除模型
+    Array.prototype.forEach.call(body.querySelectorAll("[data-model-del]"), function (btn) {
+      btn.onclick = function (e) {
+        e.stopPropagation();
+        removeModel(btn.getAttribute("data-model-del"));
+      };
+    });
+
+    // 标签行 = 显隐切换
+    Array.prototype.forEach.call(body.querySelectorAll("[data-layer]"), function (rowEl) {
       rowEl.onclick = function () {
         var l = S.layers[+rowEl.getAttribute("data-layer")];
         if (!l || l.missing) return;
@@ -1075,11 +1740,19 @@
 
     $("btnAllOn").onclick = function () {
       setAllLayers(true);
-      if (S.tileset) S.tileset.show = true;
+      S.models.forEach(function (m) { if (m.tileset) m.tileset.show = true; });
       renderLayerPanel();
     };
     $("btnAllOff").onclick = function () {
       setAllLayers(false);
+      renderLayerPanel();
+    };
+    $("btnModelsOn").onclick = function () {
+      S.models.forEach(function (m) { if (m.tileset) m.tileset.show = true; });
+      renderLayerPanel();
+    };
+    $("btnModelsOff").onclick = function () {
+      S.models.forEach(function (m) { if (m.tileset) m.tileset.show = false; });
       renderLayerPanel();
     };
 
@@ -1186,44 +1859,56 @@
   }
 
   /* ------------------------------ 顶栏 / 工具条交互 ------------------------------ */
+  /* 顶栏模型选择器：选中即"加入场景"（多模型时不清空已有的） */
   function setupModels() {
     var sel = $("modelSelect");
     sel.innerHTML = "";
+    var opt0 = document.createElement("option");
+    opt0.value = "-1";
+    opt0.textContent = "— 选择一个模型加入 —";
+    sel.appendChild(opt0);
+
     (CFG.models || []).forEach(function (m, i) {
       var opt = document.createElement("option");
       opt.value = String(i);
       opt.textContent = m.name;
       sel.appendChild(opt);
     });
-
-    var lastId = null;
-    try { lastId = localStorage.getItem((CFG.storage && CFG.storage.lastModel) || "xz3d.lastModel"); } catch (e) {}
-    var idx = 0;
-    if (lastId) {
-      (CFG.models || []).forEach(function (m, i) { if (m.id === lastId) idx = i; });
-    }
-    sel.value = String(idx);
+    sel.value = "-1";
 
     sel.onchange = function () {
+      if (sel.value === "-1") return;
       var m = CFG.models[+sel.value];
+      if (!m) return;
       try { localStorage.setItem((CFG.storage && CFG.storage.lastModel) || "xz3d.lastModel", m.id); } catch (e) {}
+      // 已经加过就不重复加，只做显隐/定位
+      var exist = S.models.filter(function (x) { return x.url === m.url; })[0];
+      if (exist) {
+        if (exist.tileset) exist.tileset.show = true;
+        toast("模型已在场景中：" + exist.name);
+        renderLayerPanel();
+        return;
+      }
       tryLoadSelected(m);
+      sel.value = "-1";
     };
-    return idx;
+    return -1;
   }
 
   function tryLoadSelected(modelDef) {
     urlExists(modelDef.url).then(function (ok) {
       if (ok) {
-        loadModel(modelDef);
+        loadModel(modelDef, { focus: true });
       } else {
-        S.modelDef = modelDef;
-        setModelState("wait", "等待模型");
-        $("statTiles").textContent = "瓦片 —";
-        showEmpty("还没有检测到三维模型",
-          "模型可能还在下载/解压。查看器每 5 秒自动检测一次，文件一到就自动加载，不需要你手动重启。");
-        $("emptyNote").innerHTML = "当前等待路径：<code>" + escapeHtml(modelDef.url) + "</code>";
-        startWatch();
+        toast("没找到模型文件：" + modelDef.url, "warn");
+        if (!S.models.length) {
+          S.modelDef = modelDef;
+          setModelState("wait", "等待模型");
+          $("statTiles").textContent = "瓦片 —";
+          showEmpty("还没有检测到三维模型",
+            "点「+ 添加」选择本地模型，或把文件放进 data/model/ 后刷新。");
+          $("emptyNote").innerHTML = "当前路径：<code>" + escapeHtml(modelDef.url) + "</code>";
+        }
       }
     });
   }
@@ -1248,8 +1933,18 @@
 
     $("btnPanelClose").onclick = closePanel;
     $("btnReloadModel").onclick = function () {
-      if (!S.modelDef) return;
-      loadModel(S.modelDef);
+      // 重新加载所有当前模型
+      var snap = S.models.map(function (m) { return { id: m.id, name: m.name, url: m.url, type: m.type, userAdded: m.userAdded }; });
+      if (!snap.length) return;
+      clearAllModels();
+      var chain = Promise.resolve();
+      snap.forEach(function (d) {
+        chain = chain.then(function () { return addModel(d, { zoom: false }); }).catch(function () {});
+      });
+      chain.then(function () {
+        viewModelDirect();
+        toast("已重新加载 " + S.models.length + " 个模型");
+      });
     };
     $("btnFullscreen").onclick = function () {
       if (!document.fullscreenElement) {
@@ -1260,35 +1955,22 @@
     };
     $("btnShot").onclick = takeShot;
     $("btnRecheck").onclick = function () {
-      if (!S.modelDef) return;
-      urlExists(S.modelDef.url).then(function (ok) {
-        if (ok) loadModel(S.modelDef);
-        else toast("还是没找到：" + S.modelDef.url + "（确认 tileset.json 层级是否正确）", "warn");
-      });
+      openAddModelDialog();
     };
     /* 正式模型还没到位时，一键切到自检模型，验证查看器本身是否正常 */
     $("btnTrySelf").onclick = function () {
       var list = CFG.models || [];
-      var i = -1;
-      list.forEach(function (m, k) { if (m.id === "selftest") i = k; });
-      if (i < 0) { toast("js/config.js 里没有 id 为 selftest 的模型条目", "warn"); return; }
-      $("modelSelect").value = String(i);
-      try { localStorage.setItem((CFG.storage && CFG.storage.lastModel) || "xz3d.lastModel", list[i].id); } catch (e) {}
-      tryLoadSelected(list[i]);
+      var self = null;
+      list.forEach(function (m) { if (m.id === "selftest") self = m; });
+      if (!self) { toast("js/config.js 里没有 id 为 selftest 的模型条目", "warn"); return; }
+      var exist = S.models.filter(function (x) { return x.url === self.url; })[0];
+      if (exist) { if (exist.tileset) exist.tileset.show = true; toast("自检模型已在场景中"); return; }
+      tryLoadSelected(self);
     };
     $("btnTypePath").onclick = function () {
-      var p = window.prompt("输入 tileset.json 的相对路径（相对 index.html）", (S.modelDef && S.modelDef.url) || "data/model/tileset/tileset.json");
-      if (!p) return;
-      p = p.trim().replace(/\\/g, "/").replace(/^\.?\//, "");
-      if (CFG.models && CFG.models.length) CFG.models[0].url = p;
-      S.modelDef = CFG.models[0];
-      try { localStorage.setItem((CFG.storage && CFG.storage.lastModel) || "xz3d.lastModel", S.modelDef.id); } catch (e) {}
-      urlExists(p).then(function (ok) {
-        if (ok) loadModel(S.modelDef);
-        else { showEmpty("路径下没有找到 tileset.json", "再核对一下路径：" + p); $("emptyNote").innerHTML = "当前路径：<code>" + escapeHtml(p) + "</code>"; }
-      });
+      openAddLabelDialog();
     };
-    $("emptyPath").textContent = "1_模型查看器\\data\\model\\tileset\\";
+    $("emptyPath").textContent = "1_模型查看器\\data\\model\\";
 
     document.addEventListener("keydown", function (e) {
       if (e.key === "Escape") {
@@ -1341,19 +2023,131 @@
       if (!S.viewer) return;
       var c = S.viewer.camera.positionCartographic;
       $("statCam").textContent = deg(c.longitude).toFixed(6) + "°, " + deg(c.latitude).toFixed(6) + "° · 高 " + fmt(c.height, 1) + " m";
-      if (S.tileset && S.modelReady && !S.tileset.show) {
+
+      if (!S.models.length) return;
+      var shown = S.models.filter(function (m) { return m.tileset && m.tileset.show; });
+      if (!shown.length) {
         $("statTiles").className = "stat";
-        $("statTiles").textContent = "瓦片 已隐藏";
-      } else if (S.tileset && S.modelReady && $("statTiles").textContent === "瓦片 …") {
-        // allTilesLoaded 迟迟不触发时，也把加载进度显示出来，别让状态栏一直停在省略号
-        var st = S.tileset.statistics || {};
-        var done = st.numberOfTilesWithContentReady, all = st.numberOfTilesTotal;
-        if (typeof done === "number" && typeof all === "number" && all > 0) {
-          $("statTiles").textContent = "瓦片 " + done + " / " + all;
-          if (done >= all) $("statTiles").className = "stat ready";
-        }
+        $("statTiles").textContent = "模型 已隐藏";
+        return;
+      }
+      // 汇总所有可见模型的瓦片进度
+      var done = 0, all = 0, hasStats = false;
+      shown.forEach(function (m) {
+        var st = m.tileset.statistics;
+        if (!st) return;
+        if (typeof st.numberOfTilesWithContentReady === "number") { done += st.numberOfTilesWithContentReady; hasStats = true; }
+        if (typeof st.numberOfTilesTotal === "number") { all += st.numberOfTilesTotal; }
+      });
+      if (hasStats && all > 0) {
+        $("statTiles").textContent = (S.models.length > 1 ? "模型 " + shown.length + " · " : "") +
+          "瓦片 " + done + " / " + all;
+        $("statTiles").className = (done >= all) ? "stat ready" : "stat loading";
       }
     }, 400);
+  }
+
+  /* ------------------------------ 拖放导入 ------------------------------ */
+  function bindDropZone() {
+    var el = document.body;
+    var overlay = document.createElement("div");
+    overlay.className = "drop-overlay hidden";
+    overlay.innerHTML = '<div class="drop-inner">松开即可添加<br><span>支持 tileset.json / .glb / 标签 JSON / KML</span></div>';
+    document.body.appendChild(overlay);
+
+    var depth = 0;
+
+    el.addEventListener("dragenter", function (e) {
+      if (!e.dataTransfer || !e.dataTransfer.types) return;
+      if (e.dataTransfer.types.indexOf("Files") < 0) return;
+      e.preventDefault();
+      depth++;
+      overlay.classList.remove("hidden");
+    });
+
+    el.addEventListener("dragover", function (e) {
+      if (e.dataTransfer && e.dataTransfer.types && e.dataTransfer.types.indexOf("Files") >= 0) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
+      }
+    });
+
+    el.addEventListener("dragleave", function (e) {
+      depth--;
+      if (depth <= 0) { depth = 0; overlay.classList.add("hidden"); }
+    });
+
+    el.addEventListener("drop", function (e) {
+      if (!e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
+      e.preventDefault();
+      depth = 0;
+      overlay.classList.add("hidden");
+
+      Array.prototype.forEach.call(e.dataTransfer.files, function (file) {
+        var name = (file.name || "").toLowerCase();
+        if (/\.(json|glb|gltf|kml)$/.test(name)) {
+          handleDroppedFile(file);
+        } else {
+          toast("不支持的文件类型：" + file.name, "warn");
+        }
+      });
+    });
+  }
+
+  /* 拖进来的文件：JSON 可能是标签也可能是 tileset，自动判断 */
+  function handleDroppedFile(file) {
+    var name = file.name.toLowerCase();
+
+    // KML → 标签
+    if (/\.kml$/.test(name)) {
+      readLabelFile(file, function (def, err) {
+        if (err) { toast("KML 读取失败：" + err, "err"); return; }
+        addLabelSource(def);
+      });
+      return;
+    }
+
+    // GLB / glTF → 模型
+    if (/\.(glb|gltf)$/.test(name)) {
+      var url = URL.createObjectURL(new Blob([""], { type: "model/gltf-binary" }));
+      // 浏览器无法直接把本地 glb 交给 Cesium 读磁盘，必须走服务路径
+      toast("GLB 需要通过本地服务路径添加（拖入的临时文件无法持久引用）。请用「+ 添加」填写路径。", "warn");
+      URL.revokeObjectURL(url);
+      openAddModelDialog();
+      return;
+    }
+
+    // JSON → 看是 tileset 还是 label
+    var fr = new FileReader();
+    fr.onload = function () {
+      var data;
+      try { data = JSON.parse(fr.result); }
+      catch (e) { toast("不是合法的 JSON：" + file.name, "err"); return; }
+
+      // 3D Tiles 的 tileset.json 一定有 root
+      if (data && data.root && (data.asset || data.geometricError !== undefined)) {
+        toast("这是 tileset.json，请用「+ 添加」填写它在服务里的路径（拖入无法直接引用）。", "warn");
+        openAddModelDialog();
+        return;
+      }
+
+      // 否则按标签处理
+      if (data && (data.features || data.groups)) {
+        addLabelSource({
+          id: "userlabel-" + Date.now().toString(36),
+          name: file.name.replace(/\.json$/i, ""),
+          type: "json",
+          data: data,
+          color: "#00d4aa",
+          userAdded: true
+        });
+        return;
+      }
+
+      toast("无法识别这个 JSON 的用途：" + file.name, "warn");
+    };
+    fr.onerror = function () { toast("读取失败：" + file.name, "err"); };
+    fr.readAsText(file, "utf-8");
   }
 
   /* ------------------------------ 启动 ------------------------------ */
@@ -1362,16 +2156,45 @@
     initialCamera();
     loadOffsetFromStorage();
     setupUI();
-    var idx = setupModels();
+    setupModels();
+    bindDropZone();
 
+    // 1. 加载配置里的标签
     loadAllLabels().then(function () {
+      // 2. 恢复用户上次手动添加的标签
+      var remembered = loadUserLabels();
+      var chain = Promise.resolve();
+      remembered.forEach(function (d) {
+        chain = chain.then(function () {
+          return addLabelSource(d).catch(function () { /* 单个失败不影响其它 */ });
+        });
+      });
+      return chain;
+    }).then(function () {
       renderLayerPanel();
-      var modelDef = (CFG.models || [])[idx];
-      if (!modelDef) {
-        showEmpty("配置里没有模型", "请在 js/config.js 的 models 里填一条 tileset.json 路径。");
+
+      // 3. 恢复用户上次手动添加的模型
+      var rememberedModels = loadUserModels();
+      var mchain = Promise.resolve();
+      rememberedModels.forEach(function (d) {
+        mchain = mchain.then(function () {
+          return addModel(d, { zoom: false }).catch(function () {});
+        });
+      });
+      return mchain;
+    }).then(function () {
+      // 4. 如果还没有任何模型，尝试加载配置里的第一个（默认行为）
+      if (S.models.length) {
+        viewModelDirect();
         return;
       }
-      tryLoadSelected(modelDef);
+      var first = (CFG.models || [])[0];
+      if (!first) {
+        showEmpty("还没有三维模型",
+          "点「+ 添加」选择本地 tileset.json 或 .glb 文件，也可以直接双击 启动查看器.bat 后把文件拖进窗口。");
+        return;
+      }
+      tryLoadSelected(first);
     });
   }
 

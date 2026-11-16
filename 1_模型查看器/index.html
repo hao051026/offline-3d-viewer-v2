@@ -30,10 +30,10 @@
 
   <div class="top-mid">
     <label class="field">
-      <span>测段</span>
-      <select id="modelSelect" title="切换要查看的模型"></select>
+      <span>模型</span>
+      <select id="modelSelect" title="选择一个模型加入场景（可同时加入多个）"></select>
     </label>
-    <button id="btnReloadModel" class="btn btn-sm" title="重新加载当前模型（换模型文件后用）">重新加载</button>
+    <button id="btnReloadModel" class="btn btn-sm" title="重新加载场景里的所有模型">重新加载</button>
     <span id="modelState" class="pill pill-wait">检测中</span>
   </div>
 
@@ -99,18 +99,18 @@
       </svg>
     </div>
     <h2 id="emptyTitle">还没有检测到三维模型</h2>
-    <p id="emptyDesc" class="empty-desc">模型还在下载/解压也没关系，查看器已经在后台每 5 秒检测一次，文件一到就自动加载。</p>
+    <p id="emptyDesc" class="empty-desc">点下面「添加模型」选择本地文件，或把文件拖进窗口。</p>
     <ol class="empty-steps">
-      <li><b>找到司空2导出的 3DTiles 包</b><span>解压后目录里有 <code>tileset.json</code> 和一堆瓦片（<code>b3dm</code> / <code>glb</code>）</span></li>
-      <li><b>整个文件夹拷进模型目录</b><span><code id="emptyPath">1_模型查看器\data\model\tileset\</code>，保持 <code>tileset.json</code> 在文件夹根层</span></li>
-      <li><b>点重新检测</b><span>或者等它自动发现；也可以点下面的"选择其他 tileset.json"手动指定路径</span></li>
+      <li><b>3D Tiles 模型</b><span>把司空2 导出的整个文件夹放进 <code id="emptyPath">1_模型查看器\data\model\</code>，保持 <code>tileset.json</code> 在根层</span></li>
+      <li><b>单文件 GLB</b><span>直接放进 <code>data\model\</code> 下，添加时填它的路径即可，可指定经纬度定位</span></li>
+      <li><b>点「添加模型」</b><span>输入相对路径，例如 <code>data/model/教室/tileset.json</code>；可同时加入多个模型</span></li>
     </ol>
     <div class="empty-actions">
-      <button id="btnRecheck" class="btn btn-primary">重新检测</button>
+      <button id="btnRecheck" class="btn btn-primary">添加模型</button>
       <button id="btnTrySelf" class="btn">先看自检模型</button>
-      <button id="btnTypePath" class="btn">手动指定 tileset.json</button>
+      <button id="btnTypePath" class="btn">添加标签</button>
     </div>
-    <p class="empty-note" id="emptyNote">当前等待路径：<code>data/model/tileset/tileset.json</code></p>
+    <p class="empty-note" id="emptyNote">提示：也可以把 .json / .glb / .kml 文件直接拖进窗口</p>
   </div>
 </div>
 
