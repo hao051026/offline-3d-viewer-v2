@@ -376,6 +376,8 @@
     window.__XZ_kmlColor = kmlColor;
     window.__XZ_xmlEsc = xmlEsc;
     window.__XZ_featureToKML = featureToKML;
+    window.__XZ_setFeatureEnabled = setFeatureEnabled;
+    window.__XZ_setLayerEnabled = setLayerEnabled;
 
     bindPicking();
     bindCameraStatus();
@@ -1417,7 +1419,7 @@
       var ent = createFeatureEntity(bucket.ds, f, bucket.color, bucket.name);
       if (ent) {
         bucket.entities.push(ent);
-        // 原始坐标/属性/名称留着，导出时原样写回去
+        // 原始坐标/属性/名称留着，导出时原样写回去；entity 用于单条显隐
         bucket.rawFeatures.push({
           id: f.id,
           name: f.name || f.label || f.id,
@@ -1425,7 +1427,9 @@
           coordinates: f.coordinates,
           properties: f.properties || {},
           showLabel: f.showLabel !== false,
-          icon: f.iconShape || (typeof f.icon === "string" ? f.icon : "")
+          icon: f.iconShape || (typeof f.icon === "string" ? f.icon : ""),
+          entity: ent,          // 绑定的 Cesium 实体，用于单条显隐
+          visible: true
         });
       }
     });
@@ -1621,7 +1625,12 @@
         }
       } catch (err) { /* 单个要素失败不影响其它 */ }
 
-      if (rec) out.push(rec);
+      if (rec) {
+        // 绑定 Cesium 实体，单条显隐时用
+        rec.entity = e;
+        rec.visible = true;
+        out.push(rec);
+      }
     });
     return out;
   }
@@ -1662,7 +1671,33 @@
   function setLayerEnabled(layer, on) {
     layer.enabled = on;
     if (layer.ds) layer.ds.show = on;
-    (layer.entities || []).forEach(function (e) { if (!e.isCesium3DTileset) e.show = on; });
+    // 整层开关：每条实体的显示 = 层开关 && 该条自己的 visible
+    (layer.rawFeatures || []).forEach(function (feat) {
+      var ent = feat && feat.entity;
+      if (ent) ent.show = !!(on && feat.visible);
+    });
+    // 兜底：没有 rawFeatures 时（异常情况）直接切实体
+    if (!(layer.rawFeatures || []).length) {
+      (layer.entities || []).forEach(function (e) {
+        if (!e.isCesium3DTileset) e.show = on;
+      });
+    }
+  }
+
+  /* 单个标签显隐：实体显示 = 层开关 && 本标签开关 */
+  function setFeatureEnabled(layer, idx, on) {
+    var feats = layer.rawFeatures || [];
+    if (!feats[idx]) return;
+    feats[idx].visible = on;
+    var ent = feats[idx].entity;
+    if (ent) ent.show = !!(layer.enabled && on);
+    // 没绑实体时（KML 来源）用实体 id 兜底
+    if (!ent && layer.entities) {
+      var fid = feats[idx].id;
+      (layer.entities || []).forEach(function (e) {
+        if (String(e.id) === String(fid)) e.show = !!(layer.enabled && on);
+      });
+    }
   }
 
   function setAllLayers(on) {
@@ -2063,15 +2098,37 @@
         var iconPrev = (l.count && !l.missing) ?
           '<img class="layer-icon" src="' + iconUrl(l.color || "#888", l.icon || "pin") + '" alt="">' : '';
         var canExport = !l.missing && (l.rawFeatures || []).length > 0;
-        html += '<div class="' + cls + '" data-layer="' + i + '">' +
+        // 展开箭头（有子条目才显示）
+        var arrow = (l.rawFeatures && l.rawFeatures.length > 1) ?
+          '<button class="mini-fold' + (l._expanded ? " folded" : "") + '" data-fold-layer="' + i + '" title="展开/收起单个标签">▸</button>' : "";
+        html += '<div class="layer-row' + (l._expanded ? " expanded" : "") + '" data-layer="' + i + '">' +
           '<span class="chk"' + (l.missing ? ' style="opacity:.35"' : "") + '></span>' +
           '<span class="swatch" style="background:' + (l.color || "#888") + '"></span>' +
           '<span class="lname">' + escapeHtml(l.name) + '</span>' +
+          arrow +
           iconPrev +
           (l.missing ? '<span class="tagm">未提供</span>' : '<span class="lcount">' + l.count + "</span>") +
           (canExport ? '<button class="mini-dl" data-export-layer="' + i + '" ' +
             'title="把这一层导出成 KML">↓</button>' : "") +
           '</div>';
+
+        // 展开后：逐个条目渲染，每个可单独勾选
+        if (l._expanded && (l.rawFeatures || []).length) {
+          html += '<div class="layer-children" data-children="' + i + '">';
+          l.rawFeatures.forEach(function (f, j) {
+            var fcls = "child-row" + (f.visible ? "" : " off");
+            var favatar = '<img class="layer-icon" src="' +
+              iconUrl(l.color || "#888", f.icon || l.icon || "pin") + '" alt="">';
+            html += '<div class="' + fcls + '" data-feat="' + i + '" data-fi="' + j + '">' +
+              '<span class="chk"' + (f.visible ? "" : ' style="opacity:.35"') + '></span>' +
+              favatar +
+              '<span class="lname">' + escapeHtml(f.name || f.id || ("要素 " + (j + 1))) + '</span>' +
+              '<span class="tagm">' + (f.type === "point" ? "点" : f.type === "polyline" ? "线" : f.type === "polygon" ? "面" : "?") + '</span>' +
+              '</div>';
+          });
+          html += '</div>';
+        }
+
         if (l.note) html += '<p class="hint" style="margin:-2px 0 8px">' + escapeHtml(l.note) + "</p>";
       });
     }
@@ -2149,14 +2206,41 @@
       };
     });
 
-    // 标签行 = 显隐切换（除导出按钮外）
+    // 标签行 = 显隐切换（除导出/折叠按钮外）
     Array.prototype.forEach.call(body.querySelectorAll("[data-layer]"), function (rowEl) {
       rowEl.onclick = function (e) {
-        // 点导出按钮不切换显隐
-        if (e.target.getAttribute && e.target.getAttribute("data-export-layer") !== null) return;
+        // 点折叠箭头或导出按钮不切换显隐
+        var t = e.target;
+        if (t.getAttribute && (
+            t.getAttribute("data-export-layer") !== null ||
+            t.getAttribute("data-fold-layer") !== null)) return;
         var l = S.layers[+rowEl.getAttribute("data-layer")];
         if (!l || l.missing) return;
         setLayerEnabled(l, !l.enabled);
+        renderLayerPanel();
+      };
+    });
+
+    // 折叠箭头：展开/收起单个标签列表
+    Array.prototype.forEach.call(body.querySelectorAll("[data-fold-layer]"), function (btn) {
+      btn.onclick = function (e) {
+        e.stopPropagation();
+        var li = +btn.getAttribute("data-fold-layer");
+        var l = S.layers[li];
+        if (!l) return;
+        l._expanded = !l._expanded;
+        renderLayerPanel();
+      };
+    });
+
+    // 单条标签 = 单独显隐
+    Array.prototype.forEach.call(body.querySelectorAll("[data-feat]"), function (row) {
+      row.onclick = function () {
+        var li = +row.getAttribute("data-feat");
+        var fi = +row.getAttribute("data-fi");
+        var l = S.layers[li];
+        if (!l) return;
+        setFeatureEnabled(l, fi, !((l.rawFeatures[fi] || {}).visible));
         renderLayerPanel();
       };
     });

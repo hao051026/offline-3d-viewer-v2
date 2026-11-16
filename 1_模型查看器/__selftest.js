@@ -266,6 +266,57 @@
       log(s === "&lt;a href=&quot;x&quot;&gt;&amp;", "XML 转义", s);
     } catch (e) { log(false, "XML 转义", String(e)); }
 
+    // 18. 单条标签可单独显隐（核心需求）
+    try {
+      var Sf = window.__XZ_STATE;
+      // 找第一个有多个要素、且 rawFeatures 带 entity 的层
+      var target = null;
+      Sf.layers.forEach(function (l) {
+        if (!target && (l.rawFeatures || []).length >= 2 && l.rawFeatures[0].entity && l.rawFeatures[1].entity) {
+          target = l;
+        }
+      });
+      if (!target) {
+        log(false, "单条标签显隐", "找不到带 entity 的多要素层");
+      } else {
+        var idx = 0, feat = target.rawFeatures[idx];
+        var ent = feat.entity;
+        var beforeOn = !!ent.show;
+        var visBefore = feat.visible;
+
+        // 点一次关闭
+        window.__XZ_setFeatureEnabled(target, idx, false);
+        var offChecked = (feat.visible === false) && (ent.show === false);
+        // 再点一次打开
+        window.__XZ_setFeatureEnabled(target, idx, true);
+        var onChecked = (feat.visible === true) && (ent.show === true);
+        log(offChecked && onChecked, "单条标签显隐",
+          "关闭后 visible=" + feat.visible + " entity.show=" + ent.show + " | 打开后恢复到显示");
+      }
+    } catch (e) { log(false, "单条标签显隐", String(e)); }
+
+    // 19. 展开状态渲染子条目
+    try {
+      var Sg = window.__XZ_STATE;
+      var firstMulti = null, li = -1;
+      Sg.layers.forEach(function (l, k) {
+        if (li < 0 && (l.rawFeatures || []).length >= 2) { firstMulti = l; li = k; }
+      });
+      if (!firstMulti) {
+        log(false, "展开子条目", "没有多要素层");
+      } else {
+        firstMulti._expanded = true;
+        window.__XZ_openPanel("layer");
+        var children = document.querySelector('[data-children="' + li + '"]');
+        var childRows = children ? children.querySelectorAll("[data-feat]") : [];
+        var hasFoldBtn = !!document.querySelector('[data-fold-layer="' + li + '"]');
+        log(childRows.length === firstMulti.rawFeatures.length && hasFoldBtn,
+          "展开子条目", "子条目=" + childRows.length + "/" + firstMulti.rawFeatures.length +
+          " 折叠按钮=" + hasFoldBtn);
+        firstMulti._expanded = false;
+      }
+    } catch (e) { log(false, "展开子条目", String(e)); }
+
     // 15. 多模型同时加载（关键功能）
     var S3 = window.__XZ_STATE;
     var all = (window.VIEWER_CONFIG.models || []);
