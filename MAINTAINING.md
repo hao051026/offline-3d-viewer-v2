@@ -59,14 +59,28 @@ git log -p --all | grep -n -E "路名|单位名|K[0-9]{2,3}\\+"
 
 ## 三、验收清单
 
-改完代码**必须实测**，不能只看语法：
+### 第一步：跑自检页（必做）
+
+改完代码先跑自动化自检，30 秒能发现大部分问题：
 
 ```bash
 cd 1_模型查看器
 py -3 serve.py --port 8810 --no-browser
+# 浏览器打开 http://127.0.0.1:8810/__selftest.html
 ```
 
-然后确认：
+**期望：标题显示「全部通过」，21 项全绿，0 失败。**
+
+它覆盖了：Cesium 加载、9 种图标生成与缓存、未知形状回退、
+模型类型识别、名称推断、唯一 id 去重、合并包围球、
+多模型同时加载、单模型独立显隐、移除模型、
+图层面板结构、两个对话框的 DOM、标签分组图标、标签源移除、
+localStorage 可用性。
+
+> 如果你改了图标形状、模型加载、标签导入中任何一块，
+> **先看自检页有没有变红**，再去看主页面。
+
+### 第二步：确认主页面
 
 | 项 | 期望 |
 | --- | --- |
@@ -74,11 +88,24 @@ py -3 serve.py --port 8810 --no-browser
 | `lib/cesium/Cesium.js` | HTTP 200，约 6 MB |
 | 顶栏下拉框 | 有「小镇」「教室」「自检模型」三项 |
 | 三维视图 | 模型可见，状态栏「瓦片 已加载」 |
-| 图层面板 | 共 76 个要素 |
+| 图层面板 | 「模型 (1)」带「+ 添加」；「矢量标签 共 76 个要素」带「+ 添加」 |
+| 图层新增按钮 | 「模型全显 / 模型全隐」存在 |
 | 浏览器控制台 | 无红色报错 |
+
+### 第三步：改动涉及新功能时的专项验证
+
+| 改了什么 | 额外要确认 |
+| --- | --- |
+| 模型加载 | 顶栏下拉连续选两个模型，两者能同时显示；各自能单独显隐、单独移除 |
+| 图标形状 | 添加标签时形状选择器有 9 个可选，选不同形状后地图上图标真的变了 |
+| 标签导入 | 用「+ 添加」导入一份 JSON 和一份 KML，图层面板出现对应层 |
+| 拖放导入 | 把 `.json` / `.kml` 拖进窗口，能自动识别并加载 |
 
 > 注意：`data/model/` 与 `data/vector/` 被 gitignore 排除，
 > **本地有数据不代表仓库里有**。首次克隆的人需要自己放数据。
+>
+> 自检页依赖 `data/model/_自检模型/tileset.json`。如果本地没有，
+> 先跑 `py -3 2_数据处理工具/生成自检模型.py` 生成一个。
 
 ---
 
@@ -125,6 +152,8 @@ git push --force origin main
 1_模型查看器/
   js/config.js        ← 唯一的配置文件（模型列表、标签列表、配色、性能参数）
   js/app.js           ← 主逻辑，改之前先读懂状态对象 S
+  __selftest.html     ← 功能自检页（21 项），改完代码先跑它
+  __selftest.js       ← 自检逻辑
   serve.py            ← 有 Python 时走这条
   serve.ps1           ← 无 Python 时走这条，行为必须与 serve.py 对齐
   data/model/         ← 模型（gitignore）
@@ -137,6 +166,30 @@ git push --force origin main
   修复司空2_tileset.py ← 修 LOD 断档
   生成自检模型.py      ← 生成 20m 立方体
 ```
+
+### app.js 里的几个关键区块
+
+改功能前先定位到对应区块，别在 2000 行里乱翻：
+
+| 区块 | 关键字 | 职责 |
+| --- | --- | --- |
+| 图标系统 | `ICON_SHAPES` / `iconUrl()` | 9 种形状的 canvas 绘制 |
+| 多模型 | `addModel()` / `removeModel()` / `syncPrimaryModel()` | 场景里多个 tileset/glb 的增删与状态同步 |
+| 合并包围球 | `sceneBoundingSphere()` | 「回到全景」框住所有模型 |
+| 标签渲染 | `createFeatureEntity()` / `applyLabelData()` | 把 features 数组变成 Cesium 实体 |
+| 添加入口 | `openAddModelDialog()` / `openAddLabelDialog()` | 两个运行时添加对话框 |
+| 持久化 | `saveUserModels()` / `saveUserLabels()` | 记到 localStorage |
+| 拖放 | `bindDropZone()` / `handleDroppedFile()` | 文件拖入识别 |
+
+**加新的图标形状**：在 `ICON_SHAPES` 数组里加名字，在 `iconUrl()` 里加一个
+`case`，`ICON_SHAPE_CN` 里加中文名。自检页会检查数量，记得同步改
+`__selftest.js` 里 `shapeBtns.length === 9` 这个断言。
+
+**状态对象 S 的两个层次**：
+- `S.models[]` 是真相来源，每条含 `tileset` / `offset` / `show` / `baseCenter`
+- `S.tileset` / `S.modelDef` / `S.baseCenter` / `S.offset` 是**兼容旧代码的镜像**，
+  由 `syncPrimaryModel()` 从 `S.models[0]` 同步。改模型相关逻辑后**必须调它**，
+  否则状态栏、快捷键会读到过期值。
 
 **改 `config.js` 时注意**：里面的 `url` 必须与磁盘上的实际文件名**完全一致**
 （含中文、全角括号）。改过名就要同步改引用，否则那一层会静默加载失败。
