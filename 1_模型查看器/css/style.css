@@ -311,6 +311,30 @@ select option{ background:#0f1720; }
 }
 .shape-btn.active img{ opacity:1; }
 
+/* 已知文件列表：点一下填进路径框，避免手打错文件名 */
+.known-list{ display:flex; flex-direction:column; gap:5px; }
+.known-item{
+  display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+  padding:7px 9px;
+  background:rgba(255,255,255,.022);
+  border:1px solid var(--line-soft); border-radius:var(--radius);
+  cursor:pointer; transition:background .15s, border-color .15s;
+}
+.known-item:hover{ background:rgba(255,255,255,.055); border-color:var(--accent-dim); }
+.known-item.sel{
+  background:rgba(0,212,170,.1); border-color:var(--accent);
+}
+.known-item .known-name{ font-size:12.5px; color:var(--text); }
+.known-item .known-path{
+  font-family:"Cascadia Mono","Consolas",monospace; font-size:11px;
+  color:var(--text-faint); background:rgba(255,255,255,.05);
+  padding:1px 5px; border-radius:3px;
+}
+.known-item .known-src{
+  font-size:10px; color:var(--text-faint);
+  border:1px solid var(--line); border-radius:3px; padding:0 4px; margin-left:auto;
+}
+
 /* 拖放提示遮罩 */
 .drop-overlay{
   position:fixed; inset:0; z-index:70;

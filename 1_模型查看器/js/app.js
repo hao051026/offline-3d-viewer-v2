@@ -353,6 +353,25 @@
     window.__XZ_closeAddLabelDialog = closeAddLabelDialog;
     window.__XZ_STATE = S;
 
+    /* 诊断用：按路径加一份标签，返回 Promise<boolean> */
+    window.__XZ_addLabelByPath = function (path, name) {
+      var p = String(path || "").replace(/\\/g, "/").replace(/^\.?\//, "");
+      var isKml = /\.kml$/i.test(p);
+      return addLabelSource({
+        id: "diag-" + Date.now().toString(36),
+        name: name || nameFromUrl(p),
+        url: p,
+        type: isKml ? "kml" : "json",
+        color: "#00d4aa"
+      });
+    };
+    /* 诊断用：把 loadJSONLabels 的实现摘要出来 */
+    window.__XZ_loadJSONLabelsSrc = (function () {
+      var s = String(loadJSONLabels);
+      if (s.indexOf("inlineData") >= 0) return "优先用 inlineData（内存数据），只有没有时才 fetch(def.url)";
+      return "只走 fetch(def.url)";
+    })();
+
     bindPicking();
     bindCameraStatus();
   }
@@ -714,6 +733,39 @@
     modelDlg.classList.remove("hidden");
     var inp = $("dlgModelPath");
     if (inp) { inp.value = ""; inp.focus(); }
+    fillKnownModels();
+  }
+
+  /* 列出 config 里已配置的模型，点一下填进路径框 */
+  function fillKnownModels() {
+    var box = $("dlgModelKnown");
+    if (!box) return;
+    var items = (CFG.models || []).slice();
+    if (!items.length) {
+      box.innerHTML = '<p class="hint" style="margin:0">config.js 里没有预置模型。' +
+        '手动填路径，或把 tileset.json / .glb 放进 data/model/ 下。</p>';
+      return;
+    }
+    var html = "";
+    items.forEach(function (m) {
+      html += '<div class="known-item" data-url="' + escapeHtml(m.url) + '">' +
+        '<span class="known-name">' + escapeHtml(m.name) + '</span>' +
+        '<code class="known-path">' + escapeHtml(m.url) + '</code>' +
+        '</div>';
+    });
+    box.innerHTML = html;
+    Array.prototype.forEach.call(box.querySelectorAll(".known-item"), function (el) {
+      el.onclick = function () {
+        var u = el.getAttribute("data-url");
+        var inp = $("dlgModelPath");
+        if (inp) { inp.value = u; inp.focus(); }
+        var nm = $("dlgModelName");
+        if (nm && !nm.value) nm.value = nameFromUrl(u);
+        Array.prototype.forEach.call(box.querySelectorAll(".known-item"), function (x) {
+          x.classList.toggle("sel", x === el);
+        });
+      };
+    });
   }
 
   function closeAddModelDialog() {
@@ -745,8 +797,11 @@
           '<p class="hint">支持 <b>3D Tiles</b>（tileset.json 的路径）和单文件 <b>GLB / glTF</b>。' +
           '路径相对于 index.html，例如 <code>data/model/教室/tileset.json</code>。</p>' +
           '<div class="form-row"><label>路径</label>' +
-            '<input type="text" id="dlgModelPath" placeholder="data/model/xxx/tileset.json" ' +
+            '<input type="text" id="dlgModelPath" placeholder="从下方「已有模型」里选，或手填" ' +
             'style="flex:1;background:#0c141c;color:#dbe6f0;border:1px solid #1e2c3a;border-radius:6px;padding:8px 10px;font-size:12.5px;font-family:inherit;outline:none">' +
+          '</div>' +
+          '<div class="sec" style="margin-top:10px"><div class="sec-title"><span>已有模型</span></div>' +
+            '<div id="dlgModelKnown" class="known-list"></div>' +
           '</div>' +
           '<div class="form-row"><label>名称</label>' +
             '<input type="text" id="dlgModelName" placeholder="留空则自动命名" ' +
@@ -804,6 +859,64 @@
     if (f) f.value = "";
     var t = $("dlgLabelName");
     if (t) t.value = "";
+    var p = $("dlgLabelPath");
+    if (p) p.value = "";
+    fillKnownLabelFiles();
+  }
+
+  /* 列出 config 里配置的标签文件，以及探测到的 data/vector 下常见文件。
+     点一下就能填进路径框，避免用户手打错名字。 */
+  function fillKnownLabelFiles() {
+    var box = $("dlgLabelKnown");
+    if (!box) return;
+
+    var items = [];
+    // 1. config 里明确写了的
+    (CFG.labels || []).forEach(function (d) {
+      if (d.url) items.push({ url: d.url, name: d.name || nameFromUrl(d.url), src: "配置" });
+    });
+
+    var render = function () {
+      if (!items.length) {
+        box.innerHTML = '<p class="hint" style="margin:0">没有找到可用的标签文件。' +
+          '可以把 .json / .kml 直接拖进窗口，或用上面的「选择文件」。</p>';
+        return;
+      }
+      var html = "";
+      items.forEach(function (it) {
+        html += '<div class="known-item" data-url="' + escapeHtml(it.url) + '">' +
+          '<span class="known-name">' + escapeHtml(it.name) + '</span>' +
+          '<code class="known-path">' + escapeHtml(it.url) + '</code>' +
+          '<span class="known-src">' + escapeHtml(it.src) + '</span>' +
+          '</div>';
+      });
+      box.innerHTML = html;
+      Array.prototype.forEach.call(box.querySelectorAll(".known-item"), function (el) {
+        el.onclick = function () {
+          var u = el.getAttribute("data-url");
+          var inp = $("dlgLabelPath");
+          if (inp) { inp.value = u; inp.focus(); }
+          var nm = $("dlgLabelName");
+          if (nm && !nm.value) nm.value = nameFromUrl(u);
+          Array.prototype.forEach.call(box.querySelectorAll(".known-item"), function (x) {
+            x.classList.toggle("sel", x === el);
+          });
+        };
+      });
+    };
+
+    // 2. 探测几个常见文件名是否存在
+    var guesses = ["data/vector/labels.json", "data/vector/自检标签.json", "data/vector/拥堵路段.json"];
+    var chain = Promise.resolve();
+    guesses.forEach(function (g) {
+      if (items.some(function (x) { return x.url === g; })) return;
+      chain = chain.then(function () {
+        return urlExists(g).then(function (ok) {
+          if (ok) items.push({ url: g, name: nameFromUrl(g), src: "探测到" });
+        });
+      });
+    });
+    chain.then(render);
   }
 
   function closeAddLabelDialog() {
@@ -839,8 +952,11 @@
             'style="flex:1;color:#dbe6f0;font-size:12px">' +
           '</div>' +
           '<div class="form-row"><label>或路径</label>' +
-            '<input type="text" id="dlgLabelPath" placeholder="data/vector/xxx.json" ' +
+            '<input type="text" id="dlgLabelPath" placeholder="从下方「可用的标签文件」里选一个" ' +
             'style="flex:1;background:#0c141c;color:#dbe6f0;border:1px solid #1e2c3a;border-radius:6px;padding:8px 10px;font-size:12.5px;font-family:inherit;outline:none">' +
+          '</div>' +
+          '<div class="sec" style="margin-top:10px"><div class="sec-title"><span>可用的标签文件</span></div>' +
+            '<div id="dlgLabelKnown" class="known-list"></div>' +
           '</div>' +
           '<div class="form-row"><label>名称</label>' +
             '<input type="text" id="dlgLabelName" placeholder="留空则自动命名" ' +
@@ -1151,12 +1267,22 @@
   }
 
   function loadJSONLabels(def, inlineData) {
-    var p = inlineData
-      ? Promise.resolve(inlineData)
-      : fetch(def.url, { cache: "no-store" }).then(function (r) {
-          if (!r.ok) throw new Error("HTTP " + r.status);
-          return r.json();
+    var p;
+    if (inlineData) {
+      p = Promise.resolve(inlineData);
+    } else if (!def.url) {
+      p = Promise.reject(new Error("没有指定文件路径"));
+    } else {
+      p = fetch(encodeURI(def.url), { cache: "no-store" }).then(function (r) {
+        if (r.status === 404) {
+          throw new Error("找不到文件 " + def.url + "（检查文件名和相对路径，区分大小写）");
+        }
+        if (!r.ok) throw new Error("HTTP " + r.status + "：" + def.url);
+        return r.json().catch(function () {
+          throw new Error("不是合法的 JSON：" + def.url);
         });
+      });
+    }
     return p.then(function (data) {
       applyLabelData(def, data);
       return true;
@@ -1167,7 +1293,14 @@
   function loadKML(def) {
     var camera = S.viewer.scene.camera, canvas = S.viewer.scene.canvas;
     var ds = new CES.KmlDataSource({ camera: camera, canvas: canvas });
-    return ds.load(encodeURI(def.url), { clampToGround: false }).then(function () {
+    return ds.load(encodeURI(def.url), { clampToGround: false }).catch(function (err) {
+      // Cesium 报的错比较含糊，这里补一句人话
+      var msg = String(err && err.message || err);
+      if (/404|not found|failed to fetch/i.test(msg)) {
+        throw new Error("找不到文件 " + def.url + "（检查文件名和相对路径，区分大小写）");
+      }
+      throw err;
+    }).then(function () {
       S.viewer.dataSources.add(ds);
       var color = def.color || "#ff5b5b";
       var entities = [];
