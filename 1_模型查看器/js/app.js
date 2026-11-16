@@ -371,6 +371,11 @@
       if (s.indexOf("inlineData") >= 0) return "优先用 inlineData（内存数据），只有没有时才 fetch(def.url)";
       return "只走 fetch(def.url)";
     })();
+    /* 导出用：暴露纯函数供自检 */
+    window.__XZ_buildKML = buildKML;
+    window.__XZ_kmlColor = kmlColor;
+    window.__XZ_xmlEsc = xmlEsc;
+    window.__XZ_featureToKML = featureToKML;
 
     bindPicking();
     bindCameraStatus();
@@ -1109,6 +1114,179 @@
     renderLayerPanel();
   }
 
+  /* ------------------------------ 导出 KML ------------------------------ */
+
+  function xmlEsc(s) {
+    return String(s === undefined || s === null ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+  }
+
+  /* #RRGGBB -> KML 的 aabbggrr（不透明） */
+  function kmlColor(hex, alpha) {
+    var h = String(hex || "#00d4aa").replace("#", "");
+    if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+    var a = Math.round((alpha === undefined ? 1 : alpha) * 255).toString(16);
+    if (a.length < 2) a = "0" + a;
+    return (a + h.substring(4, 6) + h.substring(2, 4) + h.substring(0, 2)).toLowerCase();
+  }
+
+  /* 一个要素 -> KML 的 Placemark 片段 */
+  function featureToKML(f, color) {
+    var name = f.name || f.id || "未命名";
+    var desc = "";
+    var props = f.properties || {};
+    var keys = Object.keys(props);
+    if (keys.length) {
+      desc += "<![CDATA[<table border='1' cellspacing='0' cellpadding='4'>";
+      keys.forEach(function (k) {
+        desc += "<tr><td><b>" + xmlEsc(k) + "</b></td><td>" + xmlEsc(props[k]) + "</td></tr>";
+      });
+      desc += "</table>]]>";
+    }
+
+    var geom = "";
+    var coords = f.coordinates;
+
+    if (f.type === "point") {
+      var c = coords || [0, 0, 0];
+      geom = "<Point><coordinates>" +
+        (c[0]) + "," + (c[1]) + "," + (c[2] || 0) +
+        "</coordinates></Point>";
+    } else if (f.type === "polyline") {
+      var pts = (coords || []).map(function (p) {
+        return p[0] + "," + p[1] + "," + (p[2] || 0);
+      }).join(" ");
+      geom = "<LineString><tessellate>1</tessellate><coordinates>" + pts +
+        "</coordinates></LineString>";
+    } else if (f.type === "polygon") {
+      var ring = (coords || []).map(function (p) {
+        return p[0] + "," + p[1] + "," + (p[2] || 0);
+      });
+      // KML 的多边形要求首尾闭合
+      if (ring.length && ring[0] !== ring[ring.length - 1]) ring.push(ring[0]);
+      geom = "<Polygon><outerBoundaryIs><LinearRing><coordinates>" +
+        ring.join(" ") + "</coordinates></LinearRing></outerBoundaryIs></Polygon>";
+    } else {
+      return "";
+    }
+
+    var style = "";
+    if (f.type === "point") {
+      style = "#" + "pin-" + color;
+    } else if (f.type === "polyline") {
+      style = "#line-" + color;
+    } else {
+      style = "#poly-" + color;
+    }
+
+    return "    <Placemark>\n" +
+      "      <name>" + xmlEsc(name) + "</name>\n" +
+      (desc ? "      <description>" + desc + "</description>\n" : "") +
+      "      <styleUrl>" + style + "</styleUrl>\n" +
+      "      " + geom + "\n" +
+      "    </Placemark>\n";
+  }
+
+  /* 一组图层 + 分组 -> 完整 KML 文本 */
+  function buildKML(title, layers) {
+    var styles = {};
+    var body = "";
+
+    layers.forEach(function (l) {
+      var color = l.color || "#00d4aa";
+      // 收集本层用到的样式
+      if (!styles["pin-" + color]) {
+        styles["pin-" + color] =
+          '    <Style id="pin-' + color + '">\n' +
+          '      <IconStyle><color>' + kmlColor(color) + '</color>' +
+          '<scale>1.0</scale></IconStyle>\n' +
+          '      <LabelStyle><scale>0.85</scale></LabelStyle>\n' +
+          '    </Style>\n';
+      }
+      if (!styles["line-" + color]) {
+        styles["line-" + color] =
+          '    <Style id="line-' + color + '">\n' +
+          '      <LineStyle><color>' + kmlColor(color) + '</color>' +
+          '<width>3</width></LineStyle>\n' +
+          '    </Style>\n';
+      }
+      if (!styles["poly-" + color]) {
+        styles["poly-" + color] =
+          '    <Style id="poly-' + color + '">\n' +
+          '      <LineStyle><color>' + kmlColor(color) + '</color>' +
+          '<width>2</width></LineStyle>\n' +
+          '      <PolyStyle><color>' + kmlColor(color, 0.32) + '</color></PolyStyle>\n' +
+          '    </Style>\n';
+      }
+
+      var feats = l.rawFeatures || [];
+      if (!feats.length) return;
+
+      body += "  <Folder>\n" +
+        "    <name>" + xmlEsc(l.name) + "</name>\n" +
+        "    <open>1</open>\n";
+      feats.forEach(function (f) {
+        body += featureToKML(f, color);
+      });
+      body += "  </Folder>\n";
+    });
+
+    if (!body) return null;
+
+    return '<?xml version="1.0" encoding="UTF-8"?>\n' +
+      '<kml xmlns="http://www.opengis.net/kml/2.2">\n' +
+      '<Document>\n' +
+      '  <name>' + xmlEsc(title) + '</name>\n' +
+      '  <description>由离线三维模型查看器导出</description>\n' +
+      Object.keys(styles).map(function (k) { return styles[k]; }).join("") +
+      body +
+      '</Document>\n' +
+      '</kml>\n';
+  }
+
+  /* 触发浏览器下载 */
+  function downloadText(filename, text, mime) {
+    var blob = new Blob([text], { type: (mime || "text/plain") + ";charset=utf-8" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () {
+      URL.revokeObjectURL(a.href);
+      a.remove();
+    }, 1500);
+  }
+
+  function stamp() {
+    var d = new Date();
+    function p(n) { return String(n).padStart(2, "0"); }
+    return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) +
+      "_" + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
+  }
+
+  /* 导出指定图层集合为 KML */
+  function exportKML(layers, title) {
+    var text = buildKML(title || "标签导出", layers || S.layers);
+    if (!text) {
+      toast("没有可导出的要素（只支持点/线/面，且需要有坐标数据）", "warn");
+      return false;
+    }
+    var n = layers.reduce(function (a, l) { return a + (l.rawFeatures || []).length; }, 0);
+    downloadText("标签导出_" + stamp() + ".kml", text, "application/vnd.google-earth.kml+xml");
+    toast("已导出 KML（" + n + " 个要素）");
+    return true;
+  }
+
+  /* 导出一整份标签源（它下面的所有分组） */
+  function exportLabelSource(sourceId) {
+    var ls = S.layers.filter(function (l) { return l.sourceId === sourceId; });
+    if (!ls.length) { toast("找不到这份标签", "warn"); return; }
+    var name = ls[0].name || "标签";
+    exportKML(ls, name);
+  }
+
   /* ------------------------------ 矢量标签 ------------------------------ */
   function entityLabelOpts(text, color) {
     return {
@@ -1222,7 +1400,8 @@
           color: gdef.color || def.color || LAYER_COLORS[0],
           icon: gdef.icon || def.icon || "pin",     // 分组级图标形状
           ds: null,
-          entities: []
+          entities: [],
+          rawFeatures: []                            // 保留原始数据，供导出
         };
       }
       var bucket = usedGroups[gid];
@@ -1236,7 +1415,19 @@
       // 要素没指定 icon 时继承分组图标
       if (!f.icon && !f.iconShape) f.icon = bucket.icon;
       var ent = createFeatureEntity(bucket.ds, f, bucket.color, bucket.name);
-      if (ent) bucket.entities.push(ent);
+      if (ent) {
+        bucket.entities.push(ent);
+        // 原始坐标/属性/名称留着，导出时原样写回去
+        bucket.rawFeatures.push({
+          id: f.id,
+          name: f.name || f.label || f.id,
+          type: f.type,
+          coordinates: f.coordinates,
+          properties: f.properties || {},
+          showLabel: f.showLabel !== false,
+          icon: f.iconShape || (typeof f.icon === "string" ? f.icon : "")
+        });
+      }
     });
 
     Object.keys(usedGroups).forEach(function (gid) {
@@ -1253,14 +1444,16 @@
         entities: b.entities,
         ds: b.ds,
         missing: false,
-        userAdded: !!def.userAdded
+        userAdded: !!def.userAdded,
+        /* 保留原始要素数据，导出 KML / JSON 时用（Cesium 实体里拿不到原始坐标与属性） */
+        rawFeatures: b.rawFeatures || []
       });
     });
     if (!Object.keys(usedGroups).length) {
       S.layers.push({
         id: def.id, sourceId: def.id, name: def.name, type: "矢量",
         color: def.color, count: 0, enabled: false, missing: true,
-        note: "文件里没有要素"
+        note: "文件里没有要素", rawFeatures: []
       });
     }
     return Object.keys(usedGroups).length > 0;
@@ -1362,6 +1555,7 @@
 
       S.layers.push({
         id: def.id,
+        sourceId: def.id,
         name: def.name,
         type: "KML",
         color: color,
@@ -1370,10 +1564,66 @@
         entities: entities,
         ds: ds,
         missing: false,
-        note: fixed ? ("已本地化 " + fixed + " 个外网图标") : ""
+        note: fixed ? ("已本地化 " + fixed + " 个外网图标") : "",
+        /* KML 来源没有原始 JSON，导出时从实体反推坐标 */
+        rawFeatures: entitiesToRaw(entities)
       });
       return true;
     });
+  }
+
+  /* 从 Cesium 实体反推原始要素结构（KML 来源导出时用） */
+  function entitiesToRaw(entities) {
+    var out = [];
+    entities.forEach(function (e) {
+      var now = CES.JulianDate.now();
+      var rec = null;
+
+      try {
+        if (e.position) {
+          var p = e.position.getValue(now) ||
+            (e.billboard && e.billboard.position ? e.billboard.position.getValue(now) : null);
+          if (p) {
+            var c = CES.Cartographic.fromCartesian(p);
+            rec = {
+              id: e.id, name: e.name || e.id, type: "point",
+              coordinates: [deg(c.longitude), deg(c.latitude), c.height],
+              properties: entityProps(e)
+            };
+          }
+        }
+        if (!rec && e.polyline && e.polyline.positions && e.polyline.positions.getValue) {
+          var arr = e.polyline.positions.getValue(now);
+          if (arr && arr.length >= 2) {
+            rec = {
+              id: e.id, name: e.name || e.id, type: "polyline",
+              coordinates: arr.map(function (x) {
+                var c2 = CES.Cartographic.fromCartesian(x);
+                return [deg(c2.longitude), deg(c2.latitude), c2.height];
+              }),
+              properties: entityProps(e)
+            };
+          }
+        }
+        if (!rec && e.polygon && e.polygon.hierarchy && e.polygon.hierarchy.getValue) {
+          var h = e.polygon.hierarchy.getValue(now);
+          var pos = h && h.positions ? h.positions : h;
+          if (pos && pos.length >= 3) {
+            rec = {
+              id: e.id, name: e.name || e.id, type: "polygon",
+              coordinates: pos.map(function (x) {
+                var c3 = CES.Cartographic.fromCartesian(x);
+                return [deg(c3.longitude), deg(c3.latitude), c3.height];
+              }),
+              properties: entityProps(e)
+            };
+          }
+        }
+      } catch (err) { /* 单个要素失败不影响其它 */ }
+
+      if (rec) out.push(rec);
+    });
+    return out;
   }
 
   function loadAllLabels() {
@@ -1812,12 +2062,15 @@
         var cls = "layer-row" + (l.enabled ? "" : " off") + (l.missing ? " dead" : "");
         var iconPrev = (l.count && !l.missing) ?
           '<img class="layer-icon" src="' + iconUrl(l.color || "#888", l.icon || "pin") + '" alt="">' : '';
+        var canExport = !l.missing && (l.rawFeatures || []).length > 0;
         html += '<div class="' + cls + '" data-layer="' + i + '">' +
           '<span class="chk"' + (l.missing ? ' style="opacity:.35"' : "") + '></span>' +
           '<span class="swatch" style="background:' + (l.color || "#888") + '"></span>' +
           '<span class="lname">' + escapeHtml(l.name) + '</span>' +
           iconPrev +
           (l.missing ? '<span class="tagm">未提供</span>' : '<span class="lcount">' + l.count + "</span>") +
+          (canExport ? '<button class="mini-dl" data-export-layer="' + i + '" ' +
+            'title="把这一层导出成 KML">↓</button>' : "") +
           '</div>';
         if (l.note) html += '<p class="hint" style="margin:-2px 0 8px">' + escapeHtml(l.note) + "</p>";
       });
@@ -1832,6 +2085,9 @@
       '<div class="form-row" style="gap:8px;margin-top:8px">' +
       '<button class="btn btn-sm" style="flex:1" id="btnModelsOn">模型全显</button>' +
       '<button class="btn btn-sm" style="flex:1" id="btnModelsOff">模型全隐</button></div>' +
+      '<div class="form-row" style="gap:8px;margin-top:8px">' +
+      '<button class="btn btn-sm btn-primary" style="flex:1" id="btnExportKML" ' +
+      'title="把当前所有标签导出成 KML 文件，可直接导入奥维/谷歌地球/司空2">导出全部为 KML</button></div>' +
       "</div>";
 
     /* ---------- 定位 ---------- */
@@ -1893,15 +2149,42 @@
       };
     });
 
-    // 标签行 = 显隐切换
+    // 标签行 = 显隐切换（除导出按钮外）
     Array.prototype.forEach.call(body.querySelectorAll("[data-layer]"), function (rowEl) {
-      rowEl.onclick = function () {
+      rowEl.onclick = function (e) {
+        // 点导出按钮不切换显隐
+        if (e.target.getAttribute && e.target.getAttribute("data-export-layer") !== null) return;
         var l = S.layers[+rowEl.getAttribute("data-layer")];
         if (!l || l.missing) return;
         setLayerEnabled(l, !l.enabled);
         renderLayerPanel();
       };
     });
+
+    // 单层导出
+    Array.prototype.forEach.call(body.querySelectorAll("[data-export-layer]"), function (btn) {
+      btn.onclick = function (e) {
+        e.stopPropagation();
+        var l = S.layers[+btn.getAttribute("data-export-layer")];
+        if (!l || l.missing) return;
+        exportKML([l], l.name);
+      };
+    });
+
+    // 全部导出
+    var btnAll = $("btnExportKML");
+    if (btnAll) {
+      btnAll.onclick = function () {
+        var exportable = S.layers.filter(function (l) {
+          return !l.missing && (l.rawFeatures || []).length > 0;
+        });
+        if (!exportable.length) {
+          toast("没有可导出的标签（需要先添加含点/线/面的标签）", "warn");
+          return;
+        }
+        exportKML(exportable, "全部标签");
+      };
+    }
 
     $("btnAllOn").onclick = function () {
       setAllLayers(true);

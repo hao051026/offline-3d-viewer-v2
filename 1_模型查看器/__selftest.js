@@ -226,6 +226,46 @@
         "按钮存在=" + hasArmedLogic + " 点一次进入确认态=" + armed + " 模型仍在=" + stillThere);
     } catch (e) { log(false, "移除模型需二次确认", String(e)); }
 
+    // 15. KML 导出
+    try {
+      var testFeats = [
+        { id: "P1", name: "点测试", type: "point", coordinates: [108.9, 34.0, 100], properties: { 编号: "P1", 等级: "B" } },
+        { id: "L1", name: "线测试", type: "polyline", coordinates: [[108.9, 34.0, 0], [108.9005, 34.0005, 0]], properties: {} },
+        { id: "G1", name: "面测试", type: "polygon", coordinates: [[108.9001, 34.0001, 0], [108.9005, 34.0001, 0], [108.9005, 34.0005, 0]], properties: {} }
+      ];
+      var kml = window.__XZ_buildKML("测试导出", [
+        { name: "测试层", color: "#00d4aa", rawFeatures: testFeats }
+      ]);
+
+      // 基本结构
+      var hasKml = kml && kml.indexOf("<kml") >= 0;
+      var hasDoc = kml && kml.indexOf("<Document>") >= 0;
+      var hasPm = kml && kml.indexOf("<Placemark>") >= 0;
+      // 点/线/面各有一个 Placemark
+      var placemarkCount = kml ? (kml.split("<Placemark>").length - 1) : 0;
+      // 坐标正确性
+      var hasLonLat = kml && kml.indexOf("108.9,34,100") >= 0;
+      var hasDesc = kml && kml.indexOf("等级") >= 0;
+
+      log(hasKml && hasDoc && hasPm && placemarkCount === 3 && hasLonLat && hasDesc,
+        "KML 导出结构", "Placemark=" + placemarkCount + " hasKml=" + hasKml + " 坐标=" + hasLonLat + " 属性=" + hasDesc);
+    } catch (e) { log(false, "KML 导出结构", String(e)); }
+
+    // 16. KML 颜色格式 (aabbggrr)
+    try {
+      var c1 = window.__XZ_kmlColor("#ff0000");  // 红 -> ff 00 00 ff (bbggrr)
+      var c2 = window.__XZ_kmlColor("#00ff00");  // 绿 -> ff 00 ff 00
+      var c3 = window.__XZ_kmlColor("#0000ff");  // 蓝 -> ff ff 00 00
+      log(c1 === "ff0000ff" && c2 === "ff00ff00" && c3 === "ffff0000",
+        "KML 颜色格式", c1 + " " + c2 + " " + c3);
+    } catch (e) { log(false, "KML 颜色格式", String(e)); }
+
+    // 17. XML 转义
+    try {
+      var s = window.__XZ_xmlEsc('<a href="x">&');
+      log(s === "&lt;a href=&quot;x&quot;&gt;&amp;", "XML 转义", s);
+    } catch (e) { log(false, "XML 转义", String(e)); }
+
     // 15. 多模型同时加载（关键功能）
     var S3 = window.__XZ_STATE;
     var all = (window.VIEWER_CONFIG.models || []);
