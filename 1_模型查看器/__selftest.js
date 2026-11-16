@@ -174,6 +174,58 @@
       log(typeof localStorage !== "undefined", "localStorage 可用", "OK");
     } catch (e) { log(false, "localStorage 可用", String(e)); }
 
+    // 14b. 对话框的 Esc 关闭与快捷键让位
+    try {
+      window.__XZ_openAddModelDialog();
+      var dlgEsc = document.getElementById("addModelDlg");
+      var openBefore = dlgEsc && !dlgEsc.classList.contains("hidden");
+
+      // 模拟在输入框里按 Esc
+      var inp = document.getElementById("dlgModelPath");
+      var ev = new KeyboardEvent("keydown", { key: "Escape", bubbles: true });
+      (inp || document).dispatchEvent(ev);
+
+      var openAfter = dlgEsc && !dlgEsc.classList.contains("hidden");
+      log(openBefore === true && openAfter === false, "Esc 关闭对话框",
+        "打开=" + openBefore + " → 按下后打开=" + openAfter);
+    } catch (e) { log(false, "Esc 关闭对话框", String(e)); }
+
+    // 14c. 输入框里打字不应触发 1/2/3 镜头飞行
+    try {
+      // 记录当前相机高度，模拟在输入框里按 "2"
+      var camBefore = window.XZ3D.viewer.camera.positionCartographic.height;
+      var probe = document.createElement("input");
+      document.body.appendChild(probe);
+      probe.dispatchEvent(new KeyboardEvent("keydown", { key: "2", bubbles: true }));
+      document.body.removeChild(probe);
+      // 相机没动就算通过（按键后立刻检查，飞行有动画不会瞬间改变）
+      setTimeout(function () {
+        var camAfter = window.XZ3D.viewer.camera.positionCartographic.height;
+        var moved = Math.abs(camAfter - camBefore) > 50;
+        log(!moved, "输入框内 1/2/3 不触发飞行",
+          "高度 " + camBefore.toFixed(0) + " → " + camAfter.toFixed(0));
+      }, 250);
+    } catch (e) { log(false, "输入框内 1/2/3 不触发飞行", String(e)); }
+
+    // 14d. 模型移除按钮是两段确认
+    try {
+      var Sx = window.__XZ_STATE;
+      // 造一个假模型行来检查按钮结构
+      var fake = { id: "__probe_del__", name: "探针", tileset: null, type: "tiles", show: true };
+      Sx.models.push(fake);
+      window.__XZ_openPanel("layer");
+      var btn = document.querySelector('[data-model-del="__probe_del__"]');
+      var hasArmedLogic = !!btn;
+      // 点一次应变成"确认"而不是删除
+      if (btn) btn.click();
+      var armed = btn && btn.getAttribute("data-armed") === "1";
+      var stillThere = Sx.models.some(function (m) { return m.id === "__probe_del__"; });
+      // 清理
+      Sx.models = Sx.models.filter(function (m) { return m.id !== "__probe_del__"; });
+      log(hasArmedLogic && armed && stillThere, "移除模型需二次确认",
+        "按钮存在=" + hasArmedLogic + " 点一次进入确认态=" + armed + " 模型仍在=" + stillThere);
+    } catch (e) { log(false, "移除模型需二次确认", String(e)); }
+
     // 15. 多模型同时加载（关键功能）
     var S3 = window.__XZ_STATE;
     var all = (window.VIEWER_CONFIG.models || []);

@@ -720,6 +720,18 @@
     if (modelDlg) modelDlg.classList.add("hidden");
   }
 
+  /* 有没有任何对话框开着 */
+  function isAnyDialogOpen() {
+    return !!document.querySelector(".modal:not(.hidden)");
+  }
+
+  /* 关掉所有对话框（Esc 用） */
+  function closeAllDialogs() {
+    Array.prototype.forEach.call(document.querySelectorAll(".modal"), function (m) {
+      m.classList.add("hidden");
+    });
+  }
+
   function buildModelDialog() {
     var div = document.createElement("div");
     div.id = "addModelDlg";
@@ -1641,13 +1653,13 @@
     if (S.models.length) {
       S.models.forEach(function (m) {
         var shown = m.tileset ? m.tileset.show : false;
-        html += '<div class="layer-row" data-model="' + escapeHtml(m.id) + '">' +
+        html += '<div class="layer-row' + (m.userAdded ? " user-added" : "") + '" data-model="' + escapeHtml(m.id) + '">' +
           '<span class="chk"' + (shown ? "" : ' style="opacity:.35"') + '></span>' +
           '<span class="swatch" style="background:#4aa8ff"></span>' +
           '<span class="lname">' + escapeHtml(m.name) + '</span>' +
           (m.loading ? '<span class="tagm">加载中</span>' :
             '<span class="lcount">' + (m.type === "glb" ? "GLB" : "3DTiles") + '</span>') +
-          '<button class="mini-x" data-model-del="' + escapeHtml(m.id) + '" title="移除此模型">×</button>' +
+          '<button class="mini-x" data-model-del="' + escapeHtml(m.id) + '" title="移除此模型（会再确认一次）">×</button>' +
           '</div>';
       });
     } else {
@@ -1720,11 +1732,31 @@
       };
     });
 
-    // 移除模型
+    // 移除模型（点一次变成"确认移除"，再点才真删，避免误点）
     Array.prototype.forEach.call(body.querySelectorAll("[data-model-del]"), function (btn) {
       btn.onclick = function (e) {
         e.stopPropagation();
-        removeModel(btn.getAttribute("data-model-del"));
+        var id = btn.getAttribute("data-model-del");
+        var m = findModel(id);
+        if (!m) return;
+
+        if (btn.getAttribute("data-armed") !== "1") {
+          // 第一次点击：变成确认态，3 秒后自动复原
+          btn.setAttribute("data-armed", "1");
+          btn.textContent = "确认";
+          btn.classList.add("armed");
+          btn.title = "再点一次真的移除「" + m.name + "」";
+          setTimeout(function () {
+            if (!btn.isConnected) return;
+            btn.removeAttribute("data-armed");
+            btn.textContent = "×";
+            btn.classList.remove("armed");
+            btn.title = "移除此模型";
+          }, 3000);
+          return;
+        }
+
+        removeModel(id);
       };
     });
 
@@ -1973,10 +2005,23 @@
     $("emptyPath").textContent = "1_模型查看器\\data\\model\\";
 
     document.addEventListener("keydown", function (e) {
+      // 对话框开着时：Esc 关闭它，其余快捷键全部让位（否则在输入框里打字会触发镜头飞行）
+      if (isAnyDialogOpen()) {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          e.stopPropagation();
+          closeAllDialogs();
+        }
+        return;
+      }
       if (e.key === "Escape") {
         if (S.measure.mode) { finishMeasure(); return; }
         if (!$("panel").classList.contains("panel-hidden")) closePanel();
       }
+      // 在输入框里打字时，不要触发 1/2/3 快捷键
+      var tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : "";
+      if (tag === "input" || tag === "textarea" || tag === "select") return;
+
       if (e.key === "1") flyToModel(CFG.autoFlyPitch, 1.2);
       if (e.key === "2") flyToModel(-89, 1.2);
       if (e.key === "3") flyToModel(-25, 1.2);
