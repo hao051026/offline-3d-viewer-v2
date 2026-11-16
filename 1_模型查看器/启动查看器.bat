@@ -1,11 +1,11 @@
 @echo off
 setlocal
 chcp 936 >nul
-title 西镇高速 - 离线三维模型查看器
+title 小冉学长 - 离线三维模型查看器
 cd /d "%~dp0"
 
 rem 无论走哪条分支、成不成功，都往系统临时目录记一笔，方便回看
-set "BATLOG=%TEMP%\西镇查看器_启动日志.txt"
+set "BATLOG=%TEMP%\查看器_启动日志.txt"
 >>"%BATLOG%" echo ============================================================
 >>"%BATLOG%" echo [%date% %time%] 双击启动
 >>"%BATLOG%" echo   目录 = %~dp0
