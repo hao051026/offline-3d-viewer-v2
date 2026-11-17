@@ -21,6 +21,9 @@
     userLabels: [],            // 用户手动添加的标签源（可持久化）
     measure: { mode: null, points: [], preview: null },
     measureDS: null,
+    /* 标绘：在地图上点/画标签 */
+    draw: { mode: null, points: [], preview: null, pending: null },
+    drawDS: null,
     selected: null,
     watchTimer: null,
     modelReady: false,
@@ -316,6 +319,10 @@
     S.measureDS = new CES.CustomDataSource("measure");
     v.dataSources.add(S.measureDS);
 
+    // 标绘数据源（与测量分开，结束时不互相清）
+    S.drawDS = new CES.CustomDataSource("draw");
+    v.dataSources.add(S.drawDS);
+
     // 现场排障用：浏览器控制台里可以 window.XZ3D.viewer / XZ3D.tileset 查内部状态
     window.XZ3D = {
       viewer: v,
@@ -378,6 +385,10 @@
     window.__XZ_featureToKML = featureToKML;
     window.__XZ_setFeatureEnabled = setFeatureEnabled;
     window.__XZ_setLayerEnabled = setLayerEnabled;
+    window.__XZ_saveDrawnLabel = saveDrawnLabel;
+    window.__XZ_setDrawMode = setDrawMode;
+    window.__XZ_finishDraw = finishDraw;
+    window.__XZ_drawClick = drawClick;
 
     bindPicking();
     bindCameraStatus();
@@ -1711,6 +1722,7 @@
     S.handler = handler;
 
     handler.setInputAction(function (movement) {
+      if (S.draw.mode) { drawClick(movement.position); return; }
       if (S.measure.mode) { measureClick(movement.position); return; }
       var picked = S.viewer.scene.pick(movement.position);
       if (CES.defined(picked)) {
@@ -1727,10 +1739,12 @@
     }, CES.ScreenSpaceEventType.LEFT_CLICK);
 
     handler.setInputAction(function (movement) {
+      if (S.draw.mode) { finishDraw(); return; }
       if (S.measure.mode) { finishMeasure(); return; }
     }, CES.ScreenSpaceEventType.RIGHT_CLICK);
 
     handler.setInputAction(function (movement) {
+      if (S.draw.mode) { drawMove(movement.endPosition); return; }
       if (S.measure.mode) measureMove(movement.endPosition);
     }, CES.ScreenSpaceEventType.MOUSE_MOVE);
 
@@ -1864,6 +1878,291 @@
         offset: new CES.HeadingPitchRange(0, CES.Math.toRadians(-45), 45)
       });
     } catch (e) { toast("无法定位该要素", "warn"); }
+  }
+
+  /* ------------------------------ 标绘（在地图上点/画标签） ------------------------------ */
+
+  function setDrawMode(mode) {
+    // 关掉任何进行中的测量，避免互相抢
+    if (S.measure.mode) clearMeasure();
+    S.draw.points = [];
+    S.draw.preview = null;
+    if (S.drawDS) S.drawDS.entities.removeAll();
+    S.draw.mode = mode;
+    S.draw.pending = null;
+
+    if (!mode) {
+      S.viewer.scene.canvas.style.cursor = "default";
+      $("statHint").textContent = "鼠标左键旋转，滚轮缩放，右键平移";
+      return;
+    }
+    S.viewer.scene.canvas.style.cursor = "crosshair";
+    var tip = mode === "point"
+      ? "标点：左键在地图上单击落点，右键结束"
+      : (mode === "polyline"
+        ? "画线：左键依次点击转折点，右键结束"
+        : "画面：左键依次点击多边形顶点，右键闭合");
+    $("statHint").textContent = tip;
+  }
+
+  function drawClick(pos) {
+    var world = pickWorld(pos);
+    if (!world) { toast("该位置没有可拾取的面", "warn"); return; }
+    var mode = S.draw.mode;
+    if (mode === "point") {
+      // 点标签：单击即完成
+      S.draw.points = [world];
+      finishDraw();
+      return;
+    }
+    S.draw.points.push(world);
+    drawPreview();
+  }
+
+  function drawMove(pos) {
+    if (S.draw.mode !== "polyline" && S.draw.mode !== "polygon") return;
+    if (!S.draw.points.length) return;
+    var world = pickWorld(pos);
+    if (!world) return;
+    if (S.draw.preview) S.drawDS.entities.remove(S.draw.preview);
+    var pts = S.draw.points.concat([world]);
+    S.draw.preview = S.drawDS.entities.add({
+      polyline: {
+        positions: pts,
+        width: 1.5,
+        material: new CES.PolylineDashMaterialProperty({
+          color: CES.Color.WHITE.withAlpha(0.6), dashLength: 10
+        }),
+        clampToGround: false,
+        disableDepthTestDistance: Number.POSITIVE_INFINITY
+      }
+    });
+  }
+
+  function drawPreview() {
+    if (S.drawDS) S.drawDS.entities.removeAll();
+    S.draw.preview = null;
+    var pts = S.draw.points;
+    if (!pts.length) return;
+    // 顶点标记
+    pts.forEach(function (p, i) {
+      S.drawDS.entities.add({
+        position: p,
+        point: {
+          pixelSize: 8, color: MEASURE_COLOR,
+          outlineColor: CES.Color.fromCssColorString("#0a0f16"), outlineWidth: 2,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY
+        },
+        label: {
+          text: String(i + 1),
+          font: '600 11px "Microsoft YaHei", sans-serif',
+          fillColor: MEASURE_COLOR,
+          pixelOffset: new CES.Cartesian2(0, -14),
+          disableDepthTestDistance: Number.POSITIVE_INFINITY
+        }
+      });
+    });
+    if (pts.length >= 2) {
+      var pos = pts;
+      if (S.draw.mode === "polygon") pos = pts.concat([pts[0]]);
+      S.drawDS.entities.add({
+        polyline: {
+          positions: pos,
+          width: 2.5,
+          material: new CES.ColorMaterialProperty(MEASURE_COLOR.withAlpha(0.9)),
+          clampToGround: false,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY
+        }
+      });
+    }
+    if (S.draw.mode === "polygon" && pts.length >= 3) {
+      S.drawDS.entities.add({
+        polygon: {
+          hierarchy: new CES.PolygonHierarchy(pts),
+          perPositionHeight: true,
+          material: MEASURE_COLOR.withAlpha(0.16),
+          outline: true,
+          outlineColor: MEASURE_COLOR.withAlpha(0.6),
+          arcType: CES.ArcType.NONE
+        }
+      });
+    }
+  }
+
+  function finishDraw() {
+    var pts = S.draw.points;
+    if (S.draw.preview) { S.drawDS.entities.remove(S.draw.preview); S.draw.preview = null; }
+    var mode = S.draw.mode;
+    if (!mode || !pts.length) { setDrawMode(null); return; }
+
+    // 点：1 个点；线：>=2；面：>=3
+    var valid = mode === "point" ? pts.length === 1
+      : mode === "polyline" ? pts.length >= 2
+      : pts.length >= 3;
+    if (!valid) {
+      if (mode === "point") toast("没点到位，重新试", "warn");
+      else toast((mode === "polyline" ? "线" : "面") + "至少需要 " + (mode === "polyline" ? 2 : 3) + " 个点", "warn");
+      setDrawMode(null);
+      return;
+    }
+
+    // 收集坐标（cartesian -> lon/lat/h）
+    var coords = pts.map(function (p) {
+      var c = CES.Cartographic.fromCartesian(p);
+      return [deg(c.longitude), deg(c.latitude), c.height];
+    });
+    if (mode === "point") coords = coords[0];
+
+    // 弹出命名面板
+    S.draw.pending = { mode: mode, coords: coords };
+    renderDrawDlg(mode, coords);
+    setDrawMode(null);   // 结束绘制，但保留 drawDS 上的预览直到命名
+  }
+
+  /* 标绘画板主入口：选择要画点/线/面（由 openPanel("draw") 调用，勿再调 openPanel 以免递归） */
+  function openDrawPanel() {
+    // 有 pending 时（正在命名）不覆盖
+    if (S.draw.pending) { renderDrawDlg(S.draw.pending.mode, S.draw.pending.coords); return; }
+    if (S.draw.mode) { showDrawActive(); return; }
+
+    var html = '<div class="sec"><div class="sec-title"><span>在地图上绘制标签</span></div>' +
+      '<p class="hint">点一个点生成<b>点标签</b>，画一条线生成<b>线标签</b>，' +
+      '画一个多边形生成<b>面标签</b>。画完会弹出命名窗口，保存后就是一个独立的标签。</p></div>' +
+      '<div class="sec">' +
+      '<button class="btn btn-block" style="margin-bottom:8px" id="btnDrawPoint">' +
+      '<svg viewBox="0 0 20 20" style="width:14px;height:14px;vertical-align:-2px"><circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="10" cy="10" r="2.5" fill="currentColor"/></svg> ' +
+      '标点</button>' +
+      '<button class="btn btn-block" style="margin-bottom:8px" id="btnDrawLine">' +
+      '<svg viewBox="0 0 20 20" style="width:14px;height:14px;vertical-align:-2px"><path d="M3 15 L17 5" stroke="currentColor" stroke-width="1.8"/></svg> ' +
+      '画线</button>' +
+      '<button class="btn btn-block" id="btnDrawPoly">' +
+      '<svg viewBox="0 0 20 20" style="width:14px;height:14px;vertical-align:-2px"><path d="M4 6 L10 3 L17 8 L14 16 L6 15 Z" fill="none" stroke="currentColor" stroke-width="1.6"/></svg> ' +
+      '画面</button>' +
+      '</div>' +
+      '<div class="sec"><div class="sec-title"><span>说明</span></div>' +
+      '<p class="hint">左键落点，右键结束。画的过程中按 <b>Esc</b> 取消当前绘制。<br>' +
+      '保存的点/线会作为独立标签出现在「图层」面板，可单条显隐、可导出 KML。</p></div>';
+
+    $("panelBody").innerHTML = html;
+    $("btnDrawPoint").onclick = function () { setDrawMode("point"); showDrawActive(); };
+    $("btnDrawLine").onclick = function () { setDrawMode("polyline"); showDrawActive(); };
+    $("btnDrawPoly").onclick = function () { setDrawMode("polygon"); showDrawActive(); };
+  }
+
+  /* 绘制中的提示面板 */
+  function showDrawActive() {
+    var tip = S.draw.mode === "point" ? "正在标点：在地图上单击，右键完成"
+      : S.draw.mode === "polyline" ? "正在画线：左键加转折点，右键完成"
+      : "正在画面：左键加顶点，右键闭合";
+    $("panelBody").innerHTML =
+      '<div class="result-card"><div class="rlabel">绘制中</div>' +
+      '<div class="rvalue" style="font-size:15px">' + tip + '</div>' +
+      '<div class="rsub">已取点 ' + S.draw.points.length + ' 个</div></div>' +
+      '<div class="empty-actions" style="margin-top:10px">' +
+      '<button class="btn btn-danger" id="btnDrawCancel2">取消绘制</button></div>';
+    $("btnDrawCancel2").onclick = function () {
+      setDrawMode(null);
+      S.drawDS.entities.removeAll();
+      openDrawPanel();
+    };
+  }
+
+  /* 绘制完成后的命名/保存对话框 */
+  function renderDrawDlg(mode, coords) {
+    var shapeCn = { point: "点", polyline: "线", polygon: "面" };
+    var html = '<div class="sec"><div class="sec-title"><span>保存为新标签</span>' +
+      '<span class="tagm">' + shapeCn[mode] + "</span></div>" +
+      '<div class="form-row"><label>名称</label>' +
+        '<input type="text" id="drawName" placeholder="标签名称" autofocus ' +
+        'style="flex:1;background:#0c141c;color:#dbe6f0;border:1px solid #1e2c3a;border-radius:6px;padding:8px 10px;font-size:12.5px;font-family:inherit;outline:none">' +
+      '</div>' +
+      '<div class="form-row"><label>颜色</label>' +
+        '<input type="color" id="drawColor" value="#00d4aa" ' +
+        'style="width:52px;height:30px;padding:2px;background:#0c141c;border:1px solid #1e2c3a;border-radius:6px;cursor:pointer">' +
+      '</div>' +
+      '<div class="sec" style="margin-top:8px"><div class="sec-title"><span>图标形状（仅点）</span></div>' +
+        buildShapePicker("drawShapes", mode === "point" ? "pin" : "pin") +
+      '</div>' +
+      '<div class="empty-actions" style="margin-top:14px">' +
+        '<button class="btn btn-primary" id="btnDrawSave">保存</button>' +
+        '<button class="btn" id="btnDrawCancel">取消</button>' +
+        '<button class="btn" id="btnDrawClear" style="margin-left:auto">重新画</button>' +
+      '</div>';
+
+    openPanel("draw");
+    $("panelBody").innerHTML = html;
+
+    var shape = "pin";
+    Array.prototype.forEach.call(document.querySelectorAll(".shape-btn"), function (b) {
+      b.onclick = function () {
+        shape = b.getAttribute("data-shape");
+        Array.prototype.forEach.call(document.querySelectorAll(".shape-btn"), function (x) {
+          x.classList.toggle("active", x === b);
+        });
+      };
+    });
+
+    var nameEl = $("drawName");
+    nameEl.focus();
+
+    $("btnDrawSave").onclick = function () {
+      if (!S.draw.pending) { closePanel(); return; }
+      var p = S.draw.pending;
+      var nm = (nameEl.value || "").trim() || ("新标签-" + (Date.now() % 10000));
+      var color = $("drawColor").value || "#00d4aa";
+      saveDrawnLabel(p.mode, p.coords, nm, color, shape);
+      S.draw.pending = null;
+      S.drawDS.entities.removeAll();
+      closePanel();
+    };
+    $("btnDrawCancel").onclick = function () {
+      S.draw.pending = null;
+      S.drawDS.entities.removeAll();
+      closePanel();
+    };
+    $("btnDrawClear").onclick = function () {
+      S.draw.pending = null;
+      S.drawDS.entities.removeAll();
+      setDrawMode(p.mode);
+      openPanel("draw");
+      $("panelBody").innerHTML = '<p class="hint">重新绘制：左键落点，右键结束。</p>' +
+        '<div class="empty-actions" style="margin-top:12px">' +
+        '<button class="btn" id="btnDrawStop">停止标绘</button></div>';
+      $("btnDrawStop").onclick = function () { setDrawMode(null); closePanel(); };
+    };
+    nameEl.onkeydown = function (e) { if (e.key === "Enter") $("btnDrawSave").click(); };
+  }
+
+  /* 把画好的几何保存成一个新的标签层（复用 applyLabelData） */
+  function saveDrawnLabel(type, coords, name, color, icon) {
+    var def = {
+      id: "drawn-" + Date.now().toString(36),
+      name: name,
+      color: color,
+      icon: icon || "pin",
+      userAdded: true
+    };
+    var data = {
+      version: 1,
+      name: name,
+      groups: [{ id: "main", name: name, color: color, icon: icon || "pin" }],
+      features: [{
+        id: "drawn-" + (Date.now() % 100000),
+        group: "main",
+        name: name,
+        type: type,
+        coordinates: coords,
+        label: name,
+        showLabel: true,
+        properties: { 类型: type === "point" ? "点" : type === "polyline" ? "线" : "面", 来源: "手动标绘" }
+      }]
+    };
+    applyLabelData(def, data);
+    // 记入 userLabels，可持久化
+    S.userLabels.push({ id: def.id, name: def.name, type: "json", color: color, icon: icon, data: data });
+    saveUserLabels();
+    renderLayerPanel();
+    toast("已保存标签：" + name);
   }
 
   /* ------------------------------ 测量 ------------------------------ */
@@ -2039,7 +2338,7 @@
   /* ------------------------------ 面板渲染 ------------------------------ */
   function openPanel(name) {
     S.activePanel = name;
-    var titles = { layer: "图层管理", info: "要素属性", measure: "测量", offset: "位置校正" };
+    var titles = { layer: "图层管理", info: "要素属性", measure: "测量", offset: "位置校正", draw: "标绘" };
     $("panelTitle").textContent = titles[name] || "";
     $("panel").classList.remove("panel-hidden");
     Array.prototype.forEach.call(document.querySelectorAll(".rail-btn"), function (b) {
@@ -2048,6 +2347,7 @@
     if (name === "layer") renderLayerPanel();
     if (name === "measure") renderMeasurePanel();
     if (name === "offset") renderOffsetPanel();
+    if (name === "draw") openDrawPanel();
     if (name === "info" && !S.selected) {
       $("panelBody").innerHTML = '<div class="info-empty"><b>还没有选中要素</b>在三维视图里左键点一下病害标签或模型面，这里会显示它的属性、照片和坐标。</div>';
     }
@@ -2457,6 +2757,7 @@
         if (name === "layer") renderLayerPanel();
         if (name === "measure") renderMeasurePanel();
         if (name === "offset") renderOffsetPanel();
+        if (name === "draw") openDrawPanel();
         if (name === "info" && !S.selected) {
           $("panelBody").innerHTML = '<div class="info-empty"><b>还没有选中要素</b>在三维视图里左键点一下病害标签或模型面，这里会显示它的属性、照片和坐标。</div>';
         }
@@ -2515,6 +2816,7 @@
         return;
       }
       if (e.key === "Escape") {
+        if (S.draw.mode) { setDrawMode(null); S.drawDS.entities.removeAll(); openPanel("draw"); return; }
         if (S.measure.mode) { finishMeasure(); return; }
         if (!$("panel").classList.contains("panel-hidden")) closePanel();
       }

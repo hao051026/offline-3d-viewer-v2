@@ -317,6 +317,46 @@
       }
     } catch (e) { log(false, "展开子条目", String(e)); }
 
+    // 20. 手动标绘保存（点/线/面）能进图层并可单条显隐
+    try {
+      var Sd = window.__XZ_STATE;
+      var before = Sd.layers.length;
+
+      // 保存一个点、一条线
+      window.__XZ_saveDrawnLabel("point", [108.9, 34.0, 300], "绘点测试", "#00d4aa", "star");
+      window.__XZ_saveDrawnLabel("polyline", [[108.9002, 34.0, 300], [108.9005, 34.0003, 300]], "绘线测试", "#ff5b5b", "pin");
+
+      var added = Sd.layers.length - before;
+      // 从 userLabels 确认两个源
+      var drawnSrcs = Sd.userLabels.filter(function (u) { return u.id && u.id.indexOf("drawn-") === 0; });
+      // 每个新层应有一条 feature 且带 entity 可单条显隐
+      var drawLayers = Sd.layers.filter(function (l) {
+        return (l.rawFeatures || []).length === 1 &&
+          l.rawFeatures[0].entity && l.rawFeatures[0].name.indexOf("绘") === 0;
+      });
+      // 单条显隐测试
+      var ok_Toggle = true;
+      drawLayers.forEach(function (l) {
+        if (!l.rawFeatures[0].entity) return;
+        window.__XZ_setFeatureEnabled(l, 0, false);
+        var off = l.rawFeatures[0].visible === false && l.rawFeatures[0].entity.show === false;
+        window.__XZ_setFeatureEnabled(l, 0, true);
+        var onn = l.rawFeatures[0].visible === true && l.rawFeatures[0].entity.show === true;
+        if (!(off && onn)) ok_Toggle = false;
+      });
+
+      log(added === 2 && drawLayers.length >= 2 && ok_Toggle, "标绘保存+单条显隐",
+        "新增层=" + added + " 绘制层=" + drawLayers.length + " 单条开关=" + ok_Toggle);
+
+      // 清理测试痕迹
+      drawnSrcs.forEach(function (u) {
+        var ls = Sd.layers.filter(function (l) { return l.sourceId === u.id; });
+        ls.forEach(function (l) { if (l.ds) { try { Sd.viewer.dataSources.remove(l.ds, true); } catch (e) {} } });
+      });
+      Sd.layers = Sd.layers.filter(function (l) { return l.sourceId && l.sourceId.indexOf("drawn-") !== 0; });
+      Sd.userLabels = Sd.userLabels.filter(function (u) { return !(u.id && u.id.indexOf("drawn-") === 0); });
+    } catch (e) { log(false, "标绘保存+单条显隐", String(e)); }
+
     // 15. 多模型同时加载（关键功能）
     var S3 = window.__XZ_STATE;
     var all = (window.VIEWER_CONFIG.models || []);
